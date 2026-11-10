@@ -5,6 +5,7 @@ import { motion, AnimatePresence, useSpring } from "framer-motion";
 import { AFFIRMATIONS, Affirmation } from "@/lib/affirmations-data";
 
 export type CharacterMood =
+  | "calm"
   | "grin"
   | "curious"
   | "smug"
@@ -342,17 +343,19 @@ function generateWavySquirclePath({
         Math.sin(ripplePhase) * 22 * spatialEnvelope * timeEnvelope;
     }
 
-    // Heartbeat pulse ripple around Mochi's edge
+    // Heartbeat pulse ripple around Mochi's edge (travels symmetrically from top to bottom)
     if (heartbeatRipple && heartbeatRipple.strength > 0.01) {
       const angleDiff = Math.atan2(
         Math.sin(theta - heartbeatRipple.angle),
         Math.cos(theta - heartbeatRipple.angle)
       );
       const dist = Math.abs(angleDiff);
-      const waveFront = dist - heartbeatRipple.progress * Math.PI;
-      const pulsePacket = Math.exp(-waveFront * waveFront * 5.5);
-      const fade = (1 - heartbeatRipple.progress) * heartbeatRipple.strength;
-      displacement += pulsePacket * 9.5 * fade;
+      const waveFront = dist - heartbeatRipple.progress * Math.PI * 1.15;
+      const pulsePacket =
+        Math.exp(-waveFront * waveFront * 6.0) *
+        Math.cos(waveFront * 4.5);
+      const fade = (1 - heartbeatRipple.progress * 0.75) * heartbeatRipple.strength;
+      displacement += pulsePacket * 22.0 * fade;
     }
 
     const totalR = Math.max(20, r0 + displacement);
@@ -467,20 +470,24 @@ export function ReactiveCharacter({
   // Smoothed breathing displacement ref for 60fps loop
   const targetBreathRef = useRef(0);
   const currentBreathDispRef = useRef(0);
+  const [isHeartbeatPulse, setIsHeartbeatPulse] = useState(false);
 
   useEffect(() => {
     targetBreathRef.current = breathPhase;
   }, [breathPhase]);
 
-  // Trigger a tiny edge ripple every time a heartbeat arrives
+  // Trigger a visible edge ripple + subtle pulse thump every time a heartbeat arrives
   useEffect(() => {
-    if (!cameraActive || heartbeatCount === 0) return;
+    if ((!cameraActive && !breatheWithMeActive) || heartbeatCount === 0) return;
     heartbeatRippleRef.current = {
       angle: heartbeatAngle,
       startTime: performance.now(),
-      duration: 720,
-      strength: breatheWithMeActive ? 0.85 : 1.05,
+      duration: 680,
+      strength: breatheWithMeActive ? 0.95 : 1.35,
     };
+    setIsHeartbeatPulse(true);
+    const t = setTimeout(() => setIsHeartbeatPulse(false), 160);
+    return () => clearTimeout(t);
   }, [heartbeatCount, heartbeatAngle, cameraActive, breatheWithMeActive]);
 
   // Camera head pose softly drives Mochi's gaze when camera is on
@@ -529,10 +536,10 @@ export function ReactiveCharacter({
       // Smoothly interpolate breath displacement (swells on inhale, shrinks on exhale)
       const desiredDisp =
         (cameraActive || breatheWithMeActive) && !isCardMode
-          ? targetBreathRef.current * (breatheWithMeActive ? 24 : 18)
+          ? targetBreathRef.current * (breatheWithMeActive ? 30 : 26)
           : 0;
       currentBreathDispRef.current +=
-        (desiredDisp - currentBreathDispRef.current) * 0.08;
+        (desiredDisp - currentBreathDispRef.current) * 0.12;
 
       let surge = 1.0;
       if (waveSurgeEnabled && !breatheWithMeActive) {
@@ -685,7 +692,7 @@ export function ReactiveCharacter({
       headTilt.set(targetTilt);
 
       // Rapid Left-Right Shake Detector
-      const now = Date.now();
+      const now = performance.now();
       const dt = now - lastMousePos.current.time;
       const moveX = e.clientX - lastMousePos.current.x;
 
@@ -1021,8 +1028,16 @@ export function ReactiveCharacter({
           rotate: headTilt,
         }}
         animate={{
-          scaleX: isPressed ? 1.25 : 1,
-          scaleY: isPressed ? 0.78 : 1,
+          scaleX: isPressed
+            ? 1.25
+            : (cameraActive || breatheWithMeActive) && !isCardMode
+            ? 1 + breathPhase * 0.13 + (isHeartbeatPulse ? 0.025 : 0)
+            : 1,
+          scaleY: isPressed
+            ? 0.78
+            : (cameraActive || breatheWithMeActive) && !isCardMode
+            ? 1 + breathPhase * 0.13 + (isHeartbeatPulse ? 0.025 : 0)
+            : 1,
           y: isPressed
             ? 12
             : currentMood === "dizzy"
@@ -1041,8 +1056,8 @@ export function ReactiveCharacter({
             duration: currentMood === "dizzy" ? 0.18 : 0,
             ease: "linear",
           },
-          scaleX: { type: "spring", stiffness: 500, damping: 18 },
-          scaleY: { type: "spring", stiffness: 500, damping: 18 },
+          scaleX: { type: "spring", stiffness: 120, damping: 18 },
+          scaleY: { type: "spring", stiffness: 120, damping: 18 },
         }}
         whileHover={{ scale: 1.03 }}
         whileTap={{ scale: 0.95 }}
@@ -1162,7 +1177,7 @@ export function ReactiveCharacter({
                 <motion.g style={{ x: mouseX, y: mouseY }}>
                   {/* Eyes Layer */}
                   <g fill={activeFaceTheme.faceFill}>
-                    {currentMood === "grin" && (
+                    {(currentMood === "grin" || currentMood === "calm") && (
                       <motion.g
                         initial={{ opacity: 0, scale: 0.8 }}
                         animate={{
@@ -1263,6 +1278,19 @@ export function ReactiveCharacter({
 
                   {/* Mouth Layer */}
                   <g>
+                    {currentMood === "calm" && (
+                      <motion.path
+                        initial={{ opacity: 0, scale: 0.85 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.2 }}
+                        d="M 164 196 Q 200 222 236 196"
+                        fill="none"
+                        stroke={activeFaceTheme.faceFill}
+                        strokeWidth="15"
+                        strokeLinecap="round"
+                      />
+                    )}
+
                     {(currentMood === "grin" || currentMood === "love") && (
                       <motion.g
                         initial={{ opacity: 0, scale: 0.9 }}

@@ -10,6 +10,24 @@ import {
 import { AFFIRMATIONS } from "@/lib/affirmations-data";
 import { useSmartSpectraCamera } from "@/lib/smartspectra-sensor";
 
+/** Helper to turn a rolling [-1, 1] array into a smooth SVG polyline path */
+function buildSparklinePoints(
+  values: number[],
+  width: number,
+  height: number
+): string {
+  if (!values.length) return "";
+  const stepX = width / Math.max(1, values.length - 1);
+  return values
+    .map((v, i) => {
+      const clamped = Math.max(-1, Math.min(1, v));
+      const x = (i * stepX).toFixed(1);
+      const y = (height / 2 - clamped * (height * 0.4)).toFixed(1);
+      return `${x},${y}`;
+    })
+    .join(" ");
+}
+
 export default function MochiPage() {
   const [selectedMood, setSelectedMood] = useState<CharacterMood>("grin");
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -20,8 +38,8 @@ export default function MochiPage() {
   );
   const cameraEnabled = entryState === "camera";
 
-  // Optional side-by-side webcam preview for recording the hackathon demo video
-  const [showMirrorPreview, setShowMirrorPreview] = useState(false);
+  // Side-by-side webcam mirror preview (defaults to true when turning on camera so user & judges see the live feed)
+  const [showMirrorPreview, setShowMirrorPreview] = useState(true);
   const previewVideoElRef = useRef<HTMLVideoElement | null>(null);
 
   // Step 4 & 5: "Breathe with me" Co-Regulation State
@@ -36,11 +54,22 @@ export default function MochiPage() {
   const [viewMode, setViewMode] = useState<"face" | "affirmation">("face");
   const [affirmationIndex, setAffirmationIndex] = useState(0);
 
+  // Flash state for heartbeat indicator in the SmartSpectra telemetry HUD
+  const [beatFlash, setBeatFlash] = useState(false);
+
   // SmartSpectra Camera Hook
-  const { videoRef, isReady, snapshot, stopCamera } =
+  const { videoRef, isReady, error, snapshot, stopCamera } =
     useSmartSpectraCamera(cameraEnabled);
 
-  // Sync webcam MediaStream into the optional side-by-side video element
+  // Flash the heart icon in the telemetry HUD on every detected heartbeat peak
+  useEffect(() => {
+    if (!cameraEnabled || snapshot.heartbeatCount === 0) return;
+    setBeatFlash(true);
+    const timer = setTimeout(() => setBeatFlash(false), 220);
+    return () => clearTimeout(timer);
+  }, [cameraEnabled, snapshot.heartbeatCount]);
+
+  // Sync webcam MediaStream into the side-by-side video element
   useEffect(() => {
     if (
       showMirrorPreview &&
@@ -61,6 +90,8 @@ export default function MochiPage() {
       setSelectedMood("surprised");
     } else if (snapshot.expression === "grin") {
       setSelectedMood("grin");
+    } else {
+      setSelectedMood("calm");
     }
   }, [cameraEnabled, breatheWithMe, viewMode, snapshot.expression]);
 
@@ -76,7 +107,7 @@ export default function MochiPage() {
     const startTime = performance.now();
     // 4s inhale + 5s exhale = 9s calm breathing cycle
     const cycleDurationSec = 9.0;
-    // Reward triggers after ~36 seconds (4 calm breath cycles) so judges see it clearly in a short demo
+    // Reward triggers after ~36 seconds (4 calm breath cycles)
     const rewardTargetSec = 36.0;
 
     const tick = () => {
@@ -106,7 +137,7 @@ export default function MochiPage() {
       } else if (nextProgress > 0.3) {
         setSelectedMood("smug");
       } else {
-        setSelectedMood("grin");
+        setSelectedMood("calm");
       }
 
       // Step 5: Reward! Morph into "Slow is still moving." affirmation card
@@ -130,7 +161,6 @@ export default function MochiPage() {
     stopCamera();
     setBreatheWithMe(false);
     setCalmProgress(0);
-    setShowMirrorPreview(false);
     setEntryState("just-play");
     setSelectedMood("grin");
   }, [stopCamera]);
@@ -154,7 +184,7 @@ export default function MochiPage() {
     });
   }, []);
 
-  // Keyboard navigation for affirmations + subtle expression shortcuts for demo filming
+  // Keyboard navigation for affirmations + expression shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -175,7 +205,6 @@ export default function MochiPage() {
         return;
       }
 
-      // Helpful keyboard cues when filming with camera active
       if (cameraEnabled && !breatheWithMe) {
         if (e.key.toLowerCase() === "o") {
           setSelectedMood("surprised");
@@ -212,10 +241,13 @@ export default function MochiPage() {
     ? snapshot.breathPhase
     : 0;
 
+  const breathSparkline = buildSparklinePoints(snapshot.breathTrace, 120, 26);
+  const pulseSparkline = buildSparklinePoints(snapshot.pulseTrace, 120, 26);
+
   return (
     <div className="min-h-[100dvh] bg-background text-foreground flex flex-col justify-between overflow-hidden relative selection:bg-[#fef08a] selection:text-black">
       {/* ─── Minimalist Top Bar ────────────────────────────────────── */}
-      <header className="fixed top-0 inset-x-0 z-30 px-6 sm:px-10 py-5 flex items-center justify-between pointer-events-none">
+      <header className="fixed top-0 inset-x-0 z-30 px-6 sm:px-10 py-4 flex items-center justify-between pointer-events-none">
         {/* Brand Wordmark */}
         <div className="pointer-events-auto flex items-center gap-3">
           <button
@@ -242,18 +274,18 @@ export default function MochiPage() {
                 Camera active
               </span>
 
-              {/* Optional Mirror View Toggle (for side-by-side judge demo video) */}
+              {/* Side-by-Side Mirror View Toggle */}
               <button
                 type="button"
                 onClick={() => setShowMirrorPreview((v) => !v)}
-                className={`px-2 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer ${
+                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer ${
                   showMirrorPreview
                     ? "bg-foreground text-background"
                     : "text-muted-foreground hover:text-foreground hover:bg-surface"
                 }`}
                 title="Toggle side-by-side camera mirror view"
               >
-                {showMirrorPreview ? "Hide mirror" : "Mirror view"}
+                {showMirrorPreview ? "Hide webcam" : "Show webcam"}
               </button>
 
               <button
@@ -268,7 +300,10 @@ export default function MochiPage() {
             entryState === "just-play" && (
               <button
                 type="button"
-                onClick={() => setEntryState("camera")}
+                onClick={() => {
+                  setShowMirrorPreview(true);
+                  setEntryState("camera");
+                }}
                 className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border border-border bg-surface text-xs font-medium text-foreground hover:bg-neutral-200/80 transition-all active:scale-95 cursor-pointer"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -318,15 +353,15 @@ export default function MochiPage() {
       </header>
 
       {/* ─── Main Interactive Canvas ──────────────────────────────── */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 py-16 sm:py-20 relative w-full overflow-hidden max-w-full">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 pt-14 pb-20 relative w-full overflow-hidden max-w-full">
         <div
           className={`flex flex-col ${
             showMirrorPreview && cameraEnabled
-              ? "lg:flex-row items-center justify-center gap-8 lg:gap-14"
+              ? "lg:flex-row items-center justify-center gap-6 lg:gap-12"
               : "items-center justify-center"
           } w-full max-w-5xl mx-auto`}
         >
-          {/* Optional Side-by-Side Webcam Feed for Demo Recording */}
+          {/* Side-by-Side Webcam Feed so you & judges can see your breathing/face next to Mochi */}
           <AnimatePresence>
             {showMirrorPreview && cameraEnabled && (
               <motion.div
@@ -334,7 +369,7 @@ export default function MochiPage() {
                 animate={{ opacity: 1, scale: 1, x: 0 }}
                 exit={{ opacity: 0, scale: 0.92, x: -12 }}
                 transition={{ duration: 0.25 }}
-                className="relative w-[260px] sm:w-[320px] aspect-[4/3] rounded-3xl overflow-hidden border border-border bg-surface shadow-md shrink-0"
+                className="relative w-[220px] sm:w-[270px] aspect-[4/3] rounded-3xl overflow-hidden border border-border bg-surface shadow-sm shrink-0"
               >
                 <video
                   ref={previewVideoElRef}
@@ -342,10 +377,34 @@ export default function MochiPage() {
                   muted
                   className="w-full h-full object-cover -scale-x-100"
                 />
-                <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between px-3 py-1.5 rounded-full bg-background/85 backdrop-blur-md border border-border text-[11px] font-mono text-foreground">
-                  <span>♥ {snapshot.pulseBpm} bpm</span>
+
+                {/* Overlay ROI & status tags on webcam preview */}
+                <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none">
+                  <span className="px-2 py-0.5 rounded-full bg-background/85 backdrop-blur-md border border-border text-[10px] font-mono text-foreground">
+                    SmartSpectra v{snapshot.sdkVersion}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-background/85 backdrop-blur-md border border-border text-[10px] font-mono text-muted-foreground">
+                    Zero-storage
+                  </span>
+                </div>
+
+                <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between px-2.5 py-1 rounded-full bg-background/90 backdrop-blur-md border border-border text-[11px] font-mono text-foreground">
+                  <span className="flex items-center gap-1">
+                    <span
+                      className={`inline-block transition-transform duration-150 ${
+                        beatFlash ? "scale-125 text-rose-500" : "text-foreground"
+                      }`}
+                    >
+                      ♥
+                    </span>
+                    {snapshot.pulseBpm} bpm
+                  </span>
                   <span>
-                    {snapshot.breathPhase >= 0 ? "↑ inhale" : "↓ exhale"}
+                    {snapshot.breathState === "inhaling"
+                      ? "↑ inhaling"
+                      : snapshot.breathState === "exhaling"
+                      ? "↓ exhaling"
+                      : "• steady"}
                   </span>
                 </div>
               </motion.div>
@@ -353,7 +412,7 @@ export default function MochiPage() {
           </AnimatePresence>
 
           {/* Mochi Character + Guided Breathing Whisper */}
-          <div className="flex flex-col items-center justify-center relative w-full">
+          <div className="flex flex-col items-center justify-center relative w-full max-w-[430px]">
             <ReactiveCharacter
               mood={selectedMood}
               onMoodChange={(m) => setSelectedMood(m)}
@@ -386,13 +445,14 @@ export default function MochiPage() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.35 }}
-                  className="mt-2 flex flex-col items-center gap-1 select-none pointer-events-none"
+                  className="mt-1 flex flex-col items-center gap-1 select-none pointer-events-none"
                 >
                   <span className="font-caveat text-2xl sm:text-3xl font-bold text-foreground tracking-wide">
                     {pacedBreathLabel}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    follow Mochi&apos;s rhythm
+                    follow Mochi&apos;s rhythm · calm reward{" "}
+                    {Math.round(calmProgress * 100)}%
                   </span>
                 </motion.div>
               )}
@@ -406,7 +466,7 @@ export default function MochiPage() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 8, scale: 0.98 }}
                   transition={{ duration: 0.25 }}
-                  className="mt-4 max-w-[380px] w-full rounded-2xl border border-border bg-background/95 backdrop-blur-md p-4 sm:p-5 text-center shadow-sm"
+                  className="mt-3 max-w-[380px] w-full rounded-2xl border border-border bg-background/95 backdrop-blur-md p-4 sm:p-5 text-center shadow-sm"
                 >
                   <p className="text-sm leading-relaxed text-foreground">
                     Mochi can breathe and feel with you using your camera.{" "}
@@ -417,7 +477,10 @@ export default function MochiPage() {
                   <div className="mt-4 flex items-center justify-center gap-2.5">
                     <button
                       type="button"
-                      onClick={() => setEntryState("camera")}
+                      onClick={() => {
+                        setShowMirrorPreview(true);
+                        setEntryState("camera");
+                      }}
                       className="px-4 py-2 rounded-full text-xs font-semibold bg-foreground text-background hover:opacity-90 transition-all active:scale-95 cursor-pointer"
                     >
                       Turn on camera
@@ -435,10 +498,203 @@ export default function MochiPage() {
             </AnimatePresence>
           </div>
         </div>
+
+        {/* ─── Live SmartSpectra Biometric Telemetry Readout ──────── */}
+        <AnimatePresence>
+          {cameraEnabled && viewMode === "face" && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.25 }}
+              className="mt-3 w-full max-w-2xl rounded-2xl border border-border bg-background/95 backdrop-blur-md p-3 sm:p-3.5 shadow-xs"
+            >
+              {error ? (
+                <p className="text-xs text-rose-600 text-center">{error}</p>
+              ) : (
+                <>
+                  {/* Telemetry Header */}
+                  <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-border text-[11px] font-mono text-muted-foreground">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      <span className="font-semibold text-foreground">
+                        SMARTSPECTRA BIOMETRIC FEED
+                      </span>
+                      <span className="hidden sm:inline">
+                        ({snapshot.cameraName})
+                      </span>
+                    </div>
+                    <span>
+                      {breatheWithMe
+                        ? `Guided Co-Regulation · ${Math.round(
+                            calmProgress * 100
+                          )}% to card reward`
+                        : "Live Body Mirroring · Nothing saved"}
+                    </span>
+                  </div>
+
+                  {/* 3-Column Live Signals: Breathing | Heartbeat | Expression */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    {/* 1. Breathing Signal */}
+                    <div className="rounded-xl bg-surface/70 border border-border/80 px-3 py-2 flex flex-col justify-between">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                          1. Breathing
+                        </span>
+                        <span className="text-[11px] font-mono font-semibold text-foreground">
+                          {snapshot.breathingRateBpm} br/min
+                        </span>
+                      </div>
+
+                      <div className="my-1.5 flex items-center justify-between gap-2">
+                        <span
+                          className={`text-xs font-semibold ${
+                            activeBreathPhase > 0.14
+                              ? "text-emerald-600"
+                              : activeBreathPhase < -0.14
+                              ? "text-sky-600"
+                              : "text-foreground"
+                          }`}
+                        >
+                          {activeBreathPhase > 0.14
+                            ? "↑ Inhaling"
+                            : activeBreathPhase < -0.14
+                            ? "↓ Exhaling"
+                            : "• Steady"}
+                        </span>
+
+                        {/* Live Breathing Sparkline */}
+                        <svg
+                          width="96"
+                          height="22"
+                          viewBox="0 0 120 26"
+                          className="overflow-visible shrink-0"
+                        >
+                          <line
+                            x1="0"
+                            y1="13"
+                            x2="120"
+                            y2="13"
+                            stroke="currentColor"
+                            strokeOpacity="0.15"
+                            strokeDasharray="2 2"
+                          />
+                          <polyline
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={breathSparkline}
+                          />
+                        </svg>
+                      </div>
+
+                      <div className="text-[10px] text-muted-foreground flex items-center justify-between">
+                        <span>
+                          {activeBreathPhase > 0.14
+                            ? "Mochi swells with you"
+                            : activeBreathPhase < -0.14
+                            ? "Mochi shrinks with you"
+                            : "Inhale/exhale to swell"}
+                        </span>
+                        <span className="font-mono">
+                          {activeBreathPhase >= 0 ? "+" : ""}
+                          {Math.round(activeBreathPhase * 100)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 2. Heartbeat Signal */}
+                    <div className="rounded-xl bg-surface/70 border border-border/80 px-3 py-2 flex flex-col justify-between">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                          2. Heartbeat
+                        </span>
+                        <span className="text-[11px] font-mono font-semibold text-foreground">
+                          {snapshot.pulseBpm} BPM
+                        </span>
+                      </div>
+
+                      <div className="my-1.5 flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                          <span
+                            className={`inline-block transition-transform duration-150 ${
+                              beatFlash
+                                ? "scale-125 text-rose-500"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            ♥
+                          </span>
+                          <span>{beatFlash ? "Pulse peak!" : "Tracking"}</span>
+                        </span>
+
+                        {/* Live rPPG Pulse Sparkline */}
+                        <svg
+                          width="96"
+                          height="22"
+                          viewBox="0 0 120 26"
+                          className="overflow-visible shrink-0"
+                        >
+                          <polyline
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            points={pulseSparkline}
+                          />
+                        </svg>
+                      </div>
+
+                      <div className="text-[10px] text-muted-foreground flex items-center justify-between">
+                        <span>Ripples Mochi&apos;s edge</span>
+                        <span className="font-mono">
+                          #{snapshot.heartbeatCount}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 3. Facial Expression & Gaze Signal */}
+                    <div className="rounded-xl bg-surface/70 border border-border/80 px-3 py-2 flex flex-col justify-between">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+                          3. Expression
+                        </span>
+                        <span className="text-[11px] font-mono text-muted-foreground">
+                          Face + Gaze
+                        </span>
+                      </div>
+
+                      <div className="my-1.5 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-foreground">
+                          {snapshot.expression === "grin"
+                            ? "😊 Smiling"
+                            : snapshot.expression === "surprised"
+                            ? "😮 Surprised"
+                            : "😌 Calm / Neutral"}
+                        </span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-background border border-border text-foreground">
+                          → {selectedMood}
+                        </span>
+                      </div>
+
+                      <div className="text-[10px] text-muted-foreground flex items-center justify-between">
+                        <span>Smile or open mouth wide</span>
+                        <span className="font-mono">Mirrored</span>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* ─── Bottom Navigation Dock ───────────────────────────────── */}
-      <footer className="fixed bottom-4 sm:bottom-6 inset-x-0 z-30 flex flex-col items-center justify-center px-2 sm:px-4 pointer-events-none">
+      <footer className="fixed bottom-4 sm:bottom-5 inset-x-0 z-30 flex flex-col items-center justify-center px-2 sm:px-4 pointer-events-none">
         <AnimatePresence mode="wait">
           {viewMode === "affirmation" ? (
             /* ─── Affirmation Carousel Controller Dock ─────────────── */
