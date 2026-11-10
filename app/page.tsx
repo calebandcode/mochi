@@ -353,7 +353,7 @@ export default function MochiPage() {
           </AnimatePresence>
 
           {/* Mochi Character + Guided Breathing Whisper */}
-          <div className="flex flex-col items-center justify-center relative">
+          <div className="flex flex-col items-center justify-center relative w-full">
             <ReactiveCharacter
               mood={selectedMood}
               onMoodChange={(m) => setSelectedMood(m)}
