@@ -5,6 +5,7 @@ import { motion, AnimatePresence, useSpring } from "framer-motion";
 import { AFFIRMATIONS, Affirmation } from "@/lib/affirmations-data";
 
 export type CharacterMood =
+  | "dormant"
   | "calm"
   | "grin"
   | "curious"
@@ -14,6 +15,12 @@ export type CharacterMood =
   | "dizzy"
   | "love"
   | "poked";
+
+export interface BreatheCoachMessage {
+  badge?: string;
+  lines: string[];
+  hint?: string;
+}
 
 export interface ReactiveCharacterProps {
   mood?: CharacterMood;
@@ -32,6 +39,8 @@ export interface ReactiveCharacterProps {
   onAffirmationChange?: (index: number) => void;
   // ─── SmartSpectra Biometric & Co-Regulation Props ─────────────────────────
   cameraActive?: boolean;
+  /** 0 (lifeless) to 1 (blood-flow streams meet at bottom & Mochi wakes up) */
+  awakeningProgress?: number;
   /** Live breathing phase (-1 exhale to +1 inhale) */
   breathPhase?: number;
   /** Increments on each detected heartbeat peak */
@@ -45,6 +54,8 @@ export interface ReactiveCharacterProps {
   breatheWithMeActive?: boolean;
   /** 0 (starting) to 1 (fully calm & synced -> triggers reward card) */
   calmProgress?: number;
+  /** Dynamic coaching message displayed when morphing into a card during breathing */
+  breatheCoachMessage?: BreatheCoachMessage | null;
 }
 
 // ─── Playful Web Audio Sound Synthesizer ──────────────────────────────────────
@@ -84,7 +95,7 @@ class SoundFX {
 
       osc.start(now);
       osc.stop(now + 0.09);
-    } catch {}
+    } catch { }
   }
 
   playChime() {
@@ -111,7 +122,7 @@ class SoundFX {
         osc.start(startTime);
         osc.stop(startTime + 0.45);
       });
-    } catch {}
+    } catch { }
   }
 
   playMorph() {
@@ -135,7 +146,7 @@ class SoundFX {
 
       osc.start(now);
       osc.stop(now + 0.26);
-    } catch {}
+    } catch { }
   }
 
   playDizzy() {
@@ -161,7 +172,7 @@ class SoundFX {
 
       osc.start(now);
       osc.stop(now + 0.45);
-    } catch {}
+    } catch { }
   }
 
   playPurr() {
@@ -185,7 +196,7 @@ class SoundFX {
 
       osc.start(now);
       osc.stop(now + 0.14);
-    } catch {}
+    } catch { }
   }
 
   playBoing() {
@@ -208,7 +219,31 @@ class SoundFX {
 
       osc.start(now);
       osc.stop(now + 0.22);
-    } catch {}
+    } catch { }
+  }
+
+  playHeartbeat() {
+    try {
+      this.init();
+      if (!this.ctx) return;
+      const now = this.ctx.currentTime;
+      // Soft lub-dub pulse sound
+      [0, 0.14].forEach((offset, i) => {
+        if (!this.ctx) return;
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        const t = now + offset;
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(i === 0 ? 95 : 82, t);
+        osc.frequency.exponentialRampToValueAtTime(42, t + 0.11);
+        gain.gain.setValueAtTime(i === 0 ? 0.18 : 0.12, t);
+        gain.gain.exponentialRampToValueAtTime(0.005, t + 0.12);
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.12);
+      });
+    } catch { }
   }
 }
 
@@ -278,6 +313,9 @@ function generateWavySquirclePath({
       moodAmp = 2.2;
       waveK1 = 4;
       waveK2 = 7;
+    } else if (mood === "dormant") {
+      moodSpeed = 0.35;
+      moodAmp = 0.52;
     } else if (mood === "sleepy") {
       moodSpeed = 0.45;
       moodAmp = 0.6;
@@ -297,7 +335,8 @@ function generateWavySquirclePath({
   const dragAngle = Math.atan2(dragOffset.y, dragOffset.x);
 
   for (let i = 0; i < pointsCount; i++) {
-    const theta = (i / pointsCount) * Math.PI * 2;
+    // Start at -Math.PI / 2 (top center) so blood-flow border streams split left & right from the top
+    const theta = (i / pointsCount) * Math.PI * 2 - Math.PI / 2;
     const cosT = Math.cos(theta);
     const sinT = Math.sin(theta);
 
@@ -400,6 +439,7 @@ export function ReactiveCharacter({
   onViewModeChange,
   affirmationIndex: controlledAffirmationIndex,
   cameraActive = false,
+  awakeningProgress = 1,
   breathPhase = 0,
   heartbeatCount = 0,
   heartbeatAngle = -Math.PI / 2,
@@ -407,9 +447,11 @@ export function ReactiveCharacter({
   cameraHeadY = 0,
   breatheWithMeActive = false,
   calmProgress = 0,
+  breatheCoachMessage = null,
 }: ReactiveCharacterProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bodyPathRef = useRef<SVGPathElement>(null);
+  const bloodPathRef = useRef<SVGPathElement>(null);
   const innerPathRef = useRef<SVGPathElement>(null);
 
   const [internalViewMode, setInternalViewMode] = useState<"face" | "affirmation">(
@@ -417,6 +459,7 @@ export function ReactiveCharacter({
   );
   const currentViewMode = controlledViewMode || internalViewMode;
   const isCardMode = currentViewMode === "affirmation";
+  const showCoachCard = breatheWithMeActive && Boolean(breatheCoachMessage) && !isCardMode;
 
   const [internalAffirmationIndex] = useState(
     controlledAffirmationIndex || 0
@@ -630,6 +673,9 @@ export function ReactiveCharacter({
       if (bodyPathRef.current) {
         bodyPathRef.current.setAttribute("d", outerPathData);
       }
+      if (bloodPathRef.current) {
+        bloodPathRef.current.setAttribute("d", outerPathData);
+      }
       if (innerPathRef.current) {
         innerPathRef.current.setAttribute("d", innerPathData);
       }
@@ -801,37 +847,38 @@ export function ReactiveCharacter({
     setMood("poked");
     setTimeout(() => {
       setIsPressed(false);
-      if (!controlledMood) {
-        setMood(nextRandomMood);
-      }
+      setMood(controlledMood ? "grin" : nextRandomMood);
     }, 450);
   };
 
+  const petCountRef = useRef(0);
+
   const handlePetMove = () => {
     if (!interactive || isCardMode || isDizzyRef.current) return;
-    setPetCount((prev) => {
-      const next = prev + 1;
-      if (next > 12 && currentMood !== "smug" && currentMood !== "love") {
-        setIsPetting(true);
-        if (soundEnabled) sfx.playPurr();
-        setMood("smug");
-        setTimeout(() => {
-          setIsPetting(false);
-          setPetCount(0);
-          if (!controlledMood) setMood("grin");
-        }, 3000);
-      }
-      return next;
-    });
+    petCountRef.current += 1;
+    setPetCount(petCountRef.current);
+    if (petCountRef.current > 12 && currentMood !== "smug" && currentMood !== "love") {
+      petCountRef.current = 0;
+      setIsPetting(true);
+      if (soundEnabled) sfx.playPurr();
+      setMood("smug");
+      setTimeout(() => {
+        setIsPetting(false);
+        setPetCount(0);
+        setMood("grin");
+      }, 3000);
+    }
   };
 
   const handleFlipToCard = (e?: React.MouseEvent) => {
+    if (!interactive) return;
     e?.stopPropagation();
     if (soundEnabled) sfx.playChime();
     setViewMode("affirmation");
   };
 
   const handleFlipToFace = (e?: React.MouseEvent) => {
+    if (!interactive) return;
     e?.stopPropagation();
     if (soundEnabled) sfx.playMorph();
     setViewMode("face");
@@ -844,6 +891,7 @@ export function ReactiveCharacter({
   const lastClickTimeRef = useRef(0);
 
   const handleContainerClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!interactive) return;
     if (isDraggingRef.current && dragDistanceRef.current > 10) return;
 
     if (isCardMode) {
@@ -910,16 +958,16 @@ export function ReactiveCharacter({
   const isWarmedUp = breatheWithMeActive && calmProgress > 0.28;
   const activeFaceTheme = isWarmedUp
     ? {
-        bodyColor: calmProgress > 0.65 ? "#fff5f5" : "#fffaf9",
-        faceFill: "#18181b",
-        accent: "#fecdd3",
-        glow:
-          calmProgress > 0.65
-            ? "rgba(251,113,133,0.28)"
-            : "rgba(251,146,60,0.18)",
-        border: calmProgress > 0.65 ? "#be123c" : "#18181b",
-        blush: "#fb7185",
-      }
+      bodyColor: calmProgress > 0.65 ? "#fff5f5" : "#fffaf9",
+      faceFill: "#18181b",
+      accent: "#fecdd3",
+      glow:
+        calmProgress > 0.65
+          ? "rgba(251,113,133,0.28)"
+          : "rgba(251,146,60,0.18)",
+      border: calmProgress > 0.65 ? "#be123c" : "#18181b",
+      blush: "#fb7185",
+    }
     : themes[colorTheme] || themes.monochrome;
 
   const activeBodyColor = isCardMode
@@ -927,12 +975,18 @@ export function ReactiveCharacter({
     : activeFaceTheme.bodyColor;
   const activeBorderColor = isCardMode
     ? currentAffirmation.theme.border
-    : activeFaceTheme.border;
+    : currentMood === "dormant"
+      ? "#b4afa8"
+      : activeFaceTheme.border;
   const activeGlowColor = isCardMode
     ? currentAffirmation.theme.glow
     : activeFaceTheme.glow;
 
-  const showPurrBadge = !isCardMode && (isPetting || isCoRegulatingPurr);
+  const clampedAwakening = Math.max(0, Math.min(1, awakeningProgress));
+  const halfBloodLen = clampedAwakening * 50;
+
+  const showPurrBadge =
+    !isCardMode && !showCoachCard && (isPetting || isCoRegulatingPurr);
 
   return (
     <div
@@ -942,18 +996,9 @@ export function ReactiveCharacter({
     >
       {/* ─── Floating Mood Particles ───────────────────────────────── */}
       <AnimatePresence>
-        {!isCardMode && currentMood === "love" && (
+        {!isCardMode && !showCoachCard && currentMood === "sleepy" && (
           <motion.div
-            initial={{ opacity: 0, scale: 0, y: 10 }}
-            animate={{ opacity: 1, scale: 1.1, y: -32 }}
-            exit={{ opacity: 0, scale: 0.6 }}
-            className="absolute -top-6 text-2xl font-bold text-rose-500 pointer-events-none z-20"
-          >
-            💖 💖
-          </motion.div>
-        )}
-        {!isCardMode && currentMood === "sleepy" && (
-          <motion.div
+            key="mood-particle-sleepy"
             initial={{ opacity: 0, x: -10, y: 0 }}
             animate={{
               opacity: [0, 1, 0],
@@ -968,6 +1013,7 @@ export function ReactiveCharacter({
         )}
         {showPurrBadge && (
           <motion.div
+            key="mood-particle-purr"
             initial={{ opacity: 0, scale: 0.5 }}
             animate={{ opacity: 1, scale: 1.15, y: -24 }}
             exit={{ opacity: 0 }}
@@ -976,8 +1022,9 @@ export function ReactiveCharacter({
             ✨ purr ✨
           </motion.div>
         )}
-        {!isCardMode && currentMood === "dizzy" && (
+        {!isCardMode && !showCoachCard && currentMood === "dizzy" && (
           <motion.div
+            key="mood-particle-dizzy"
             animate={{ rotate: 360 }}
             transition={{ repeat: Infinity, duration: 1.8, ease: "linear" }}
             className="absolute -top-8 text-2xl pointer-events-none z-20"
@@ -1021,9 +1068,9 @@ export function ReactiveCharacter({
             isDraggingRef.current = false;
           }, 120);
         }}
-        onClick={handleContainerClick}
-        onDoubleClick={!isCardMode ? handleFlipToCard : undefined}
-        onMouseMove={handlePetMove}
+        onClick={interactive ? handleContainerClick : undefined}
+        onDoubleClick={interactive && !isCardMode ? handleFlipToCard : undefined}
+        onMouseMove={interactive ? handlePetMove : undefined}
         style={{
           rotate: headTilt,
         }}
@@ -1031,18 +1078,18 @@ export function ReactiveCharacter({
           scaleX: isPressed
             ? 1.25
             : (cameraActive || breatheWithMeActive) && !isCardMode
-            ? 1 + breathPhase * 0.13 + (isHeartbeatPulse ? 0.025 : 0)
-            : 1,
+              ? 1 + breathPhase * 0.13 + (isHeartbeatPulse ? 0.025 : 0)
+              : 1,
           scaleY: isPressed
             ? 0.78
             : (cameraActive || breatheWithMeActive) && !isCardMode
-            ? 1 + breathPhase * 0.13 + (isHeartbeatPulse ? 0.025 : 0)
-            : 1,
+              ? 1 + breathPhase * 0.13 + (isHeartbeatPulse ? 0.025 : 0)
+              : 1,
           y: isPressed
             ? 12
             : currentMood === "dizzy"
-            ? [0, -3, 3, 0]
-            : [0, -5, 0],
+              ? [0, -3, 3, 0]
+              : [0, -5, 0],
           x: currentMood === "dizzy" ? [-3, 3, -2, 2, 0] : 0,
         }}
         transition={{
@@ -1061,9 +1108,8 @@ export function ReactiveCharacter({
         }}
         whileHover={{ scale: 1.03 }}
         whileTap={{ scale: 0.95 }}
-        className={`w-full h-full flex items-center justify-center ${
-          isCardMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"
-        } relative`}
+        className={`w-full h-full flex items-center justify-center ${isCardMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"
+          } relative`}
       >
         {/* ─── Unified Dynamic SVG Character Canvas (Wavy Border) ──── */}
         <svg
@@ -1114,10 +1160,36 @@ export function ReactiveCharacter({
               ref={bodyPathRef}
               fill={activeBodyColor}
               stroke={activeBorderColor}
+
               strokeWidth={isCardMode ? "3.5" : "4.5"}
               strokeLinecap="round"
               strokeLinejoin="round"
               className="transition-[fill,stroke] duration-500 ease-out"
+            />
+
+            {/* Blood-flow awakening border: splits left & right from top center until meeting at bottom */}
+            <path
+              ref={bloodPathRef}
+              pathLength={100}
+              fill="none"
+              stroke="#dc2626"
+              strokeWidth="5.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeDasharray={`${halfBloodLen} ${Math.max(
+                0,
+                100 - 2 * halfBloodLen
+              )} ${halfBloodLen} 0`}
+              style={{
+                opacity:
+                  !isCardMode && clampedAwakening > 0 && clampedAwakening < 1
+                    ? 1
+                    : 0,
+                filter: "drop-shadow(0 0 8px rgba(220, 38, 38, 0.45))",
+                transition:
+                  "stroke-dasharray 0.38s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.45s ease",
+              }}
+              className="pointer-events-none"
             />
 
             <path
@@ -1131,7 +1203,7 @@ export function ReactiveCharacter({
 
           {/* ════════════ 2. FACE MODE: BLUSH & FACIAL FEATURES ════════════ */}
           <AnimatePresence>
-            {!isCardMode && (
+            {!isCardMode && !showCoachCard && (
               <motion.g
                 key="face-layer"
                 initial={{ opacity: 0, scale: 0.7 }}
@@ -1142,17 +1214,19 @@ export function ReactiveCharacter({
                 {/* Cheeks */}
                 <motion.g
                   style={{
-                    x: mouseX,
-                    y: mouseY,
+                    x: currentMood === "dormant" ? 0 : mouseX,
+                    y: currentMood === "dormant" ? 0 : mouseY,
                   }}
                   animate={{
                     opacity:
-                      currentMood === "smug" ||
-                      currentMood === "love" ||
-                      isPetting ||
-                      isWarmedUp
-                        ? 0.85
-                        : 0.28,
+                      currentMood === "dormant"
+                        ? 0
+                        : currentMood === "smug" ||
+                          currentMood === "love" ||
+                          isPetting ||
+                          isWarmedUp
+                          ? 0.85
+                          : 0.28,
                     scale: currentMood === "love" || isWarmedUp ? 1.25 : 1,
                   }}
                   className="pointer-events-none"
@@ -1174,9 +1248,30 @@ export function ReactiveCharacter({
                 </motion.g>
 
                 {/* Eyes & Mouth Feature Layer */}
-                <motion.g style={{ x: mouseX, y: mouseY }}>
+                <motion.g
+                  style={{
+                    x: currentMood === "dormant" ? 0 : mouseX,
+                    y: currentMood === "dormant" ? 0 : mouseY,
+                  }}
+                >
                   {/* Eyes Layer */}
                   <g fill={activeFaceTheme.faceFill}>
+                    {currentMood === "dormant" && (
+                      <motion.g
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 0.28 }}
+                        exit={{ opacity: 0 }}
+                        fill="none"
+                        stroke={activeFaceTheme.faceFill}
+                        strokeWidth="8.5"
+                        strokeLinecap="round"
+                      >
+                        {/* Classic plush/spirit doll stitched ×   × eyes */}
+                        <path d="M 122 102 L 156 136 M 156 102 L 122 136" />
+                        <path d="M 244 102 L 278 136 M 278 102 L 244 136" />
+                      </motion.g>
+                    )}
+
                     {(currentMood === "grin" || currentMood === "calm") && (
                       <motion.g
                         initial={{ opacity: 0, scale: 0.8 }}
@@ -1278,6 +1373,24 @@ export function ReactiveCharacter({
 
                   {/* Mouth Layer */}
                   <g>
+                    {currentMood === "dormant" && (
+                      <motion.g
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 0.22 }}
+                        exit={{ opacity: 0 }}
+                        fill="none"
+                        stroke={activeFaceTheme.faceFill}
+                        strokeWidth="5.5"
+                        strokeLinecap="round"
+                      >
+                        <path d="M 176 202 L 224 202" />
+                        <path
+                          d="M 188 195 L 188 209 M 200 195 L 200 209 M 212 195 L 212 209"
+                          strokeWidth="4"
+                        />
+                      </motion.g>
+                    )}
+
                     {currentMood === "calm" && (
                       <motion.path
                         initial={{ opacity: 0, scale: 0.85 }}
@@ -1390,6 +1503,36 @@ export function ReactiveCharacter({
             )}
           </AnimatePresence>
         </svg>
+
+        {/* ════════════ 2.5 COACH QUOTE CARD IN PACED BREATHING ════════════ */}
+        <AnimatePresence>
+          {showCoachCard && breatheCoachMessage && (
+            <motion.div
+              key={breatheCoachMessage.lines.join(" ")}
+              initial={{ opacity: 0, scale: 0.9, y: 6 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: -6 }}
+              transition={{ duration: 0.35, ease: "easeOut" }}
+              className="absolute inset-5 sm:inset-7 flex flex-col items-center justify-center p-6 sm:p-8 pointer-events-none select-none z-20 text-center"
+              style={{
+                x: mouseX,
+                y: mouseY,
+              }}
+            >
+              <div className="flex flex-col gap-1.5 items-center justify-center max-w-[290px]">
+                {breatheCoachMessage.lines.map((line, idx) => (
+                  <p
+                    key={idx}
+                    className="font-caveat text-[24px] sm:text-[28px] md:text-[32px] font-bold leading-tight tracking-wide text-foreground drop-shadow-xs"
+                    style={{ fontFamily: "var(--font-caveat), cursive" }}
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* ════════════ 3. CLEAN AFFIRMATION CARD ════════════ */}
         <AnimatePresence>
@@ -1589,12 +1732,11 @@ export function ReactiveCharacter({
                   )}
 
                   <div
-                    className={`py-2 my-auto flex flex-col gap-1.5 ${
-                      currentAffirmation.particles === "raindrops" ||
-                      currentAffirmation.fontStyle === "serif-italic"
+                    className={`py-2 my-auto flex flex-col gap-1.5 ${currentAffirmation.particles === "raindrops" ||
+                        currentAffirmation.fontStyle === "serif-italic"
                         ? "text-center items-center"
                         : "text-left items-start"
-                    }`}
+                      }`}
                   >
                     {currentAffirmation.lines.map((line, idx) => {
                       const hasOval =
@@ -1614,7 +1756,12 @@ export function ReactiveCharacter({
                         <div
                           key={idx}
                           className={`${fontClass} drop-shadow-xs`}
-                          style={{ color: currentAffirmation.theme.text }}
+                          style={{
+                            color: currentAffirmation.theme.text,
+                            fontFamily: isSerif
+                              ? "var(--font-cormorant), serif"
+                              : "var(--font-caveat), cursive",
+                          }}
                         >
                           {hasOval ? (
                             <span className="relative inline-block my-0.5">
