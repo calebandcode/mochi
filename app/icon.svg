@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Mochi Squircle Body -->
+  <rect x="3" y="3" width="58" height="58" rx="18" ry="18" fill="#FFFDF8" stroke="#18181B" stroke-width="3.5" />
+  
+  <!-- Rosy Blush Cheeks -->
+  <ellipse cx="13" cy="38" rx="5.5" ry="3" fill="#FDA4AF" opacity="0.85" />
+  <ellipse cx="51" cy="38" rx="5.5" ry="3" fill="#FDA4AF" opacity="0.85" />
+  
+  <!-- Eyes with Sparkle Highlights -->
+  <circle cx="21" cy="27" r="5" fill="#18181B" />
+  <circle cx="43" cy="27" r="5" fill="#18181B" />
+  <circle cx="22.5" cy="25.5" r="1.6" fill="#FFFFFF" />
+  <circle cx="44.5" cy="25.5" r="1.6" fill="#FFFFFF" />
+  
+  <!-- Gentle Happy Smile -->
+  <path d="M 25 36.5 Q 32 44.5 39 36.5" fill="none" stroke="#18181B" stroke-width="3.5" stroke-linecap="round" />
+</svg>

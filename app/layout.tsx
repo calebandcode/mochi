@@ -50,6 +50,13 @@ export const metadata: Metadata = {
   title: "Mochi — A Daily Minute of Stillness",
   description:
     "Pause and be still with Mochi. A daily bio-sensing stillness companion that breathes, feels your pulse through your camera, and helps you slow down.",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "32x32" },
+    ],
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
