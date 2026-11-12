@@ -49,6 +49,15 @@ const COACH_MESSAGES = [
   },
 ];
 
+const IDLE_MINDFUL_QUOTES = [
+  { lines: ["let the noise out...", "be here now."] },
+  { lines: ["soften your shoulders...", "take a slow breath."] },
+  { lines: ["you don't have to rush.", "this moment is enough."] },
+  { lines: ["unclench your jaw...", "let the day settle."] },
+  { lines: ["quiet mind,", "steady heart."] },
+  { lines: ["inhale space,", "exhale hurry."] },
+];
+
 export default function MochiPage() {
   const [selectedMood, setSelectedMood] = useState<CharacterMood>("dormant");
   const [soundEnabled] = useState(true);
@@ -91,6 +100,13 @@ export default function MochiPage() {
     hint?: string;
   } | null>(null);
   const lastCoachMsgRef = useRef<string | null>(null);
+
+  // Gentle idle mindful quote displayed when resting in face mode before "Breathe with me"
+  const [idleQuoteMessage, setIdleQuoteMessage] = useState<{
+    badge?: string;
+    lines: string[];
+    hint?: string;
+  } | null>(null);
 
   // Milestone Celebration Screen (Duolingo Flaming Comet Style)
   const [showMilestone, setShowMilestone] = useState(false);
@@ -220,6 +236,50 @@ export default function MochiPage() {
       setSelectedMood("calm");
     }
   }, [storyStage, cameraEnabled, breatheWithMe, viewMode, snapshot.expression]);
+
+  // Gentle idle mindful quote cycling when resting in face mode before "Breathe with me"
+  useEffect(() => {
+    if (
+      storyStage !== "alive" ||
+      !cameraEnabled ||
+      breatheWithMe ||
+      viewMode !== "face" ||
+      showMilestone
+    ) {
+      setIdleQuoteMessage(null);
+      return;
+    }
+
+    let quoteIndex = 0;
+    let timeoutId: NodeJS.Timeout;
+
+    const scheduleNextQuote = () => {
+      // Give manual user interactions (petting, poking, dragging) priority
+      if (performance.now() - lastUserInteractionRef.current < 4500) {
+        timeoutId = setTimeout(scheduleNextQuote, 5000);
+        return;
+      }
+
+      const quote =
+        IDLE_MINDFUL_QUOTES[quoteIndex % IDLE_MINDFUL_QUOTES.length];
+      quoteIndex++;
+      setIdleQuoteMessage(quote);
+
+      // Morph into quote card for 5.5s, then back to smiling face for 13s
+      timeoutId = setTimeout(() => {
+        setIdleQuoteMessage(null);
+        timeoutId = setTimeout(scheduleNextQuote, 13000);
+      }, 5500);
+    };
+
+    // First mindful quote after 10 seconds of resting in face mode
+    timeoutId = setTimeout(scheduleNextQuote, 10000);
+
+    return () => {
+      clearTimeout(timeoutId);
+      setIdleQuoteMessage(null);
+    };
+  }, [storyStage, cameraEnabled, breatheWithMe, viewMode, showMilestone]);
 
   // "Breathe with me" Paced Breathing Loop
   useEffect(() => {
@@ -625,7 +685,9 @@ export default function MochiPage() {
               cameraHeadY={storyStage === "alive" ? snapshot.headY : 0}
               breatheWithMeActive={breatheWithMe}
               calmProgress={calmProgress}
-              breatheCoachMessage={breatheCoachMessage}
+              breatheCoachMessage={
+                breatheWithMe ? breatheCoachMessage : idleQuoteMessage
+              }
             />
 
             {/* ─── Seamless Minimal BPM + Red Vertical Bar Graph (Matching Reference) ─── */}

@@ -459,7 +459,7 @@ export function ReactiveCharacter({
   );
   const currentViewMode = controlledViewMode || internalViewMode;
   const isCardMode = currentViewMode === "affirmation";
-  const showCoachCard = breatheWithMeActive && Boolean(breatheCoachMessage) && !isCardMode;
+  const showCoachCard = Boolean(breatheCoachMessage) && !isCardMode;
 
   const [internalAffirmationIndex] = useState(
     controlledAffirmationIndex || 0
