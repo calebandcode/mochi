@@ -8,6 +8,7 @@ import {
   sfx,
 } from "@/components/mochi-character";
 import { MilestoneCelebration } from "@/components/milestone-celebration";
+import { recordStillnessSession } from "@/lib/streak";
 import { downloadQuoteCard } from "@/lib/download-quote-card";
 import { AFFIRMATIONS } from "@/lib/affirmations-data";
 import { useSmartSpectraCamera } from "@/lib/smartspectra-sensor";
@@ -93,6 +94,8 @@ export default function MochiPage() {
   const [showMilestone, setShowMilestone] = useState(false);
   const [milestoneData, setMilestoneData] = useState<{
     streak: number;
+    isNewDayIncrement?: boolean;
+    totalSessions?: number;
     startBpm: number;
     endBpm: number;
     calmGain: number;
@@ -340,17 +343,13 @@ export default function MochiPage() {
         setBreatheCoachMessage(null);
         setBreatheWithMe(false);
 
-        // Milestone streak management
-        let streak = 1;
-        try {
-          const raw = localStorage.getItem("mochi_breathe_streak");
-          const val = raw ? parseInt(raw, 10) : 0;
-          streak = (isNaN(val) || val < 1 ? 0 : val) + 1;
-          localStorage.setItem("mochi_breathe_streak", String(streak));
-        } catch { }
+        // True Calendar-Day Streak Recording
+        const streakResult = recordStillnessSession();
 
         setMilestoneData({
-          streak,
+          streak: streakResult.streak,
+          isNewDayIncrement: streakResult.isNewDayIncrement,
+          totalSessions: streakResult.totalSessions,
           startBpm: startVal,
           endBpm: endVal,
           calmGain: Math.max(1, startVal - endVal),
@@ -878,6 +877,8 @@ export default function MochiPage() {
         {showMilestone && milestoneData && (
           <MilestoneCelebration
             streak={milestoneData.streak}
+            isNewDayIncrement={milestoneData.isNewDayIncrement}
+            totalSessions={milestoneData.totalSessions}
             startBpm={milestoneData.startBpm}
             endBpm={milestoneData.endBpm}
             calmGain={milestoneData.calmGain}

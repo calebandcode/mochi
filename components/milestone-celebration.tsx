@@ -6,6 +6,8 @@ import { ReactiveCharacter, sfx } from "@/components/mochi-character";
 
 interface MilestoneCelebrationProps {
   streak: number;
+  isNewDayIncrement?: boolean;
+  totalSessions?: number;
   startBpm?: number;
   endBpm?: number;
   calmGain?: number;
@@ -15,6 +17,7 @@ interface MilestoneCelebrationProps {
 
 export function MilestoneCelebration({
   streak,
+  isNewDayIncrement = true,
   onContinue,
   soundEnabled = true,
 }: MilestoneCelebrationProps) {
@@ -221,7 +224,7 @@ export function MilestoneCelebration({
           {/* Clean Label Underneath */}
           <div className="mt-1 flex items-center justify-center gap-2">
             <span className="text-xs sm:text-sm font-mono font-bold uppercase tracking-[0.22em] text-muted-foreground">
-              Stillness Streak
+              {isNewDayIncrement ? "Stillness Streak" : "Streak Maintained"}
             </span>
           </div>
 
@@ -230,7 +233,9 @@ export function MilestoneCelebration({
             className="mt-4 text-lg sm:text-xl font-bold text-foreground/90 font-caveat tracking-wide"
             style={{ fontFamily: "var(--font-caveat), cursive" }}
           >
-            You showed up for your stillness today.
+            {isNewDayIncrement
+              ? "You showed up for your stillness today."
+              : "Another peaceful pause today."}
           </p>
         </motion.div>
       </div>
