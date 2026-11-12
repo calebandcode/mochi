@@ -86,6 +86,11 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const breathCrossingsRef = useRef<number[]>([]);
   const wsDataTimestampRef = useRef<number>(0);
 
+  // Stabilized Pulse Smoothing & Commit Rate Limiter (Apple Watch / Oura style damping)
+  const smoothedPulseBpmRef = useRef<number>(72);
+  const lastDisplayedBpmRef = useRef<number>(72);
+  const lastBpmCommitTimeRef = useRef<number>(0);
+
   // Neutral face baseline calibrated only while a face is present
   const baselineRef = useRef<{
     samples: number;
@@ -126,6 +131,9 @@ export function useSmartSpectraCamera(enabled: boolean) {
     faceConfidenceRef.current = 0;
     smoothedBreathRef.current = 0;
     prevBreathPhaseRef.current = 0;
+    smoothedPulseBpmRef.current = 72;
+    lastDisplayedBpmRef.current = 72;
+    lastBpmCommitTimeRef.current = 0;
     baselineRef.current = {
       samples: 0,
       mouthDarkRatio: 0.08,
@@ -661,7 +669,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
             }
 
             // --- 4. Heartbeat (rPPG pulse peak + edge ripple trigger, ONLY when face is present) ---
-            let pulseBpm = 72;
             let normalizedPulseWave = 0;
             const gBuf = greenSignalBuffer.current;
             if (gBuf.length > 20) {
@@ -669,18 +676,36 @@ export function useSmartSpectraCamera(enabled: boolean) {
               const variance =
                 gBuf.reduce((a, s) => a + Math.abs(s.v - gMean), 0) /
                 gBuf.length;
-              pulseBpm = Math.round(
-                Math.max(
-                  60,
-                  Math.min(92, 68 + variance * 3.0 + currentBreath * 2.5)
-                )
+
+              // Raw target bounded within physiological range (60-88 bpm)
+              const rawTargetBpm = Math.max(
+                60,
+                Math.min(88, 68 + variance * 2.0 + currentBreath * 1.2)
               );
+
+              // 1. Heavy low-pass EMA filter (smooth 3-second moving window)
+              smoothedPulseBpmRef.current =
+                smoothedPulseBpmRef.current * 0.985 + rawTargetBpm * 0.015;
+
+              // 2. Display Damping: rate-limit updates to at most every 1.5 seconds, step-limited to ±1 BPM
+              if (now - lastBpmCommitTimeRef.current >= 1500) {
+                lastBpmCommitTimeRef.current = now;
+                const roundedTarget = Math.round(smoothedPulseBpmRef.current);
+                if (roundedTarget > lastDisplayedBpmRef.current) {
+                  lastDisplayedBpmRef.current += 1;
+                } else if (roundedTarget < lastDisplayedBpmRef.current) {
+                  lastDisplayedBpmRef.current -= 1;
+                }
+              }
+
               const latestG = gBuf[gBuf.length - 1].v;
               normalizedPulseWave = Math.max(
                 -1,
                 Math.min(1, (latestG - gMean) / Math.max(0.35, variance * 1.8))
               );
             }
+
+            const pulseBpm = lastDisplayedBpmRef.current;
 
             const beatIntervalMs = (60 / pulseBpm) * 1000;
             let triggeredBeat = false;

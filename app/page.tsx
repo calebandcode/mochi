@@ -647,10 +647,12 @@ export default function MochiPage() {
                         {snapshot.facePresent && snapshot.pulseBpm > 0
                           ? breatheWithMe && baselineBpm
                             ? Math.max(
-                              58,
-                              Math.round(baselineBpm - calmProgress * 7)
-                            )
-                            : snapshot.pulseBpm
+                                58,
+                                Math.round(baselineBpm - calmProgress * 7)
+                              )
+                            : settledBpm !== null
+                              ? settledBpm
+                              : snapshot.pulseBpm
                           : "--"}
                       </span>
                       <span className="ml-1.5 text-base sm:text-lg font-normal text-foreground/80 tracking-normal">
@@ -786,7 +788,10 @@ export default function MochiPage() {
                   >
                     <button
                       type="button"
-                      onClick={() => setBreatheWithMe(true)}
+                      onClick={() => {
+                        setSettledBpm(null);
+                        setBreatheWithMe(true);
+                      }}
                       className="flex items-center gap-2.5 px-7 py-3 rounded-full text-sm font-medium tracking-tight shadow-[0_14px_28px_-6px_rgba(0,0,0,0.32)] hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer bg-[#0a0a0a] hover:bg-[#171717] text-white"
                     >
                       <span>Breathe with me</span>
