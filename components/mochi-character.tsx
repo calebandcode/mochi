@@ -488,6 +488,8 @@ export function ReactiveCharacter({
   const mouseX = useSpring(0, { stiffness: 220, damping: 20 });
   const mouseY = useSpring(0, { stiffness: 220, damping: 20 });
   const headTilt = useSpring(0, { stiffness: 180, damping: 18 });
+  const bodyX = useSpring(0, { stiffness: 180, damping: 22 });
+  const bodyY = useSpring(0, { stiffness: 180, damping: 22 });
 
   const shakeHistory = useRef<{ x: number; time: number; dir: number }[]>([]);
   const lastMousePos = useRef({ x: 0, y: 0, time: 0 });
@@ -533,13 +535,32 @@ export function ReactiveCharacter({
     return () => clearTimeout(t);
   }, [heartbeatCount, heartbeatAngle, cameraActive, breatheWithMeActive]);
 
-  // Camera head pose softly drives Mochi's gaze when camera is on
+  // Camera head pose softly drives Mochi's gaze and body lean when camera is on
   useEffect(() => {
-    if (!cameraActive || isCardMode) return;
-    mouseX.set(cameraHeadX * 14);
-    mouseY.set(cameraHeadY * 10);
-    headTilt.set(cameraHeadX * 5);
-  }, [cameraActive, cameraHeadX, cameraHeadY, isCardMode, mouseX, mouseY, headTilt]);
+    if (!cameraActive || isCardMode) {
+      bodyX.set(0);
+      bodyY.set(0);
+      return;
+    }
+    // Gaze follows user's face position
+    mouseX.set(cameraHeadX * 26);
+    mouseY.set(cameraHeadY * 18);
+    // Head tilts gently in direction of gaze
+    headTilt.set(cameraHeadX * 7);
+    // Whole squircle body leans and floats toward user's face
+    bodyX.set(cameraHeadX * 18);
+    bodyY.set(cameraHeadY * 12);
+  }, [
+    cameraActive,
+    cameraHeadX,
+    cameraHeadY,
+    isCardMode,
+    mouseX,
+    mouseY,
+    headTilt,
+    bodyX,
+    bodyY,
+  ]);
 
   // Purr sound during deep calm in "Breathe with me"
   const isCoRegulatingPurr = breatheWithMeActive && calmProgress >= 0.55;
@@ -733,9 +754,12 @@ export function ReactiveCharacter({
       const targetY = Math.max(-1, Math.min(1, dy)) * (isCardMode ? 8 : 16);
       const targetTilt = Math.max(-1, Math.min(1, dx)) * (isCardMode ? 4 : 8);
 
-      mouseX.set(targetX);
-      mouseY.set(targetY);
-      headTilt.set(targetTilt);
+      // When camera is actively sensing, camera face tracking takes priority over mouse cursor
+      if (!cameraActive) {
+        mouseX.set(targetX);
+        mouseY.set(targetY);
+        headTilt.set(targetTilt);
+      }
 
       // Rapid Left-Right Shake Detector
       const now = performance.now();
@@ -1034,8 +1058,13 @@ export function ReactiveCharacter({
         )}
       </AnimatePresence>
 
-      {/* ─── Elastic Drag & Interactive Container ──────────────────── */}
+      {/* ─── Body Follow & Lean Wrapper ───────────────────────────────── */}
       <motion.div
+        style={{ x: bodyX, y: bodyY }}
+        className="w-full h-full flex items-center justify-center"
+      >
+        {/* ─── Elastic Drag & Interactive Container ──────────────────── */}
+        <motion.div
         drag={interactive && !isCardMode}
         dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
         dragElastic={0.4}
@@ -1822,7 +1851,8 @@ export function ReactiveCharacter({
           )}
         </AnimatePresence>
       </motion.div>
-    </div>
+    </motion.div>
+  </div>
   );
 }
 

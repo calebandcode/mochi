@@ -91,6 +91,10 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const lastDisplayedBpmRef = useRef<number>(72);
   const lastBpmCommitTimeRef = useRef<number>(0);
 
+  // Smooth Head & Face Follow Tracking
+  const smoothedHeadXRef = useRef<number>(0);
+  const smoothedHeadYRef = useRef<number>(0);
+
   // Neutral face baseline calibrated only while a face is present
   const baselineRef = useRef<{
     samples: number;
@@ -134,6 +138,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
     smoothedPulseBpmRef.current = 72;
     lastDisplayedBpmRef.current = 72;
     lastBpmCommitTimeRef.current = 0;
+    smoothedHeadXRef.current = 0;
+    smoothedHeadYRef.current = 0;
     baselineRef.current = {
       samples: 0,
       mouthDarkRatio: 0.08,
@@ -232,6 +238,7 @@ export function useSmartSpectraCamera(enabled: boolean) {
         };
         let nativeDetector: NativeFaceDetector | null = null;
         let nativeFaceResult: boolean | null = null;
+        let nativeFaceBox: { x: number; y: number; width: number; height: number } | null = null;
         let lastNativeCheck = 0;
 
         if (typeof window !== "undefined" && "FaceDetector" in window) {
@@ -258,16 +265,26 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
           const video = videoRef.current;
           if (ctx && video && video.readyState >= 2) {
-            // Query native FaceDetector every ~220ms if available
-            if (nativeDetector && now - lastNativeCheck > 220) {
+            // Query native FaceDetector every ~160ms if available
+            if (nativeDetector && now - lastNativeCheck > 160) {
               lastNativeCheck = now;
               nativeDetector
                 .detect(video)
                 .then((faces) => {
-                  nativeFaceResult = Array.isArray(faces) && faces.length > 0;
+                  if (Array.isArray(faces) && faces.length > 0) {
+                    nativeFaceResult = true;
+                    const b = faces[0].boundingBox;
+                    if (b) {
+                      nativeFaceBox = { x: b.x, y: b.y, width: b.width, height: b.height };
+                    }
+                  } else {
+                    nativeFaceResult = false;
+                    nativeFaceBox = null;
+                  }
                 })
                 .catch(() => {
                   nativeFaceResult = null;
+                  nativeFaceBox = null;
                 });
             }
 
@@ -283,6 +300,11 @@ export function useSmartSpectraCamera(enabled: boolean) {
             let centerTotal = 0;
             let skinCountOuter = 0;
             let outerTotal = 0;
+
+            // Full-frame skin tracking for wide-angle face following
+            let allSkinSumX = 0;
+            let allSkinSumY = 0;
+            let allSkinCount = 0;
 
             let greenSum = 0;
             let lumaSum = 0;
@@ -313,6 +335,12 @@ export function useSmartSpectraCamera(enabled: boolean) {
                   cb <= 127 &&
                   cr >= 133 &&
                   cr <= 173;
+
+                if (isHumanSkin && y < H * 0.85) {
+                  allSkinSumX += x;
+                  allSkinSumY += y;
+                  allSkinCount++;
+                }
 
                 const inCenterBox = x >= 26 && x <= 102 && y >= 10 && y <= 76;
                 if (inCenterBox) {
@@ -416,11 +444,21 @@ export function useSmartSpectraCamera(enabled: boolean) {
             const facePresent = faceConfidenceRef.current >= 0.45;
 
             if (!facePresent) {
-              // No face in view -> immediately stop heartbeats and decay breathing to 0
+              // No face in view -> decay head gaze, stop heartbeats, and decay breathing
+              smoothedHeadXRef.current *= 0.85;
+              smoothedHeadYRef.current *= 0.85;
               smoothedBreathRef.current *= 0.85;
               setSnapshot((prev) => ({
                 ...prev,
                 facePresent: false,
+                headX:
+                  Math.abs(smoothedHeadXRef.current) < 0.01
+                    ? 0
+                    : smoothedHeadXRef.current,
+                headY:
+                  Math.abs(smoothedHeadYRef.current) < 0.01
+                    ? 0
+                    : smoothedHeadYRef.current,
                 breathPhase:
                   Math.abs(smoothedBreathRef.current) < 0.02
                     ? 0
@@ -434,8 +472,35 @@ export function useSmartSpectraCamera(enabled: boolean) {
               return;
             }
 
-            const headX = -((faceCenterX - W / 2) / (W * 0.25));
-            const headY = (faceCenterY - H * 0.42) / (H * 0.25);
+            // Wide-Angle Face Centroid Calculation (hardware-accelerated FaceDetector or full-field skin tracking)
+            let targetFaceCenterX = faceCenterX;
+            let targetFaceCenterY = faceCenterY;
+
+            if (nativeFaceBox && video.videoWidth > 0 && video.videoHeight > 0) {
+              targetFaceCenterX =
+                ((nativeFaceBox.x + nativeFaceBox.width / 2) / video.videoWidth) * W;
+              targetFaceCenterY =
+                ((nativeFaceBox.y + nativeFaceBox.height / 2) / video.videoHeight) * H;
+            } else if (allSkinCount > 25) {
+              targetFaceCenterX = allSkinSumX / allSkinCount;
+              targetFaceCenterY = allSkinSumY / allSkinCount;
+            }
+
+            const rawHeadX = Math.max(
+              -1,
+              Math.min(1, -((targetFaceCenterX - W / 2) / (W * 0.28)))
+            );
+            const rawHeadY = Math.max(
+              -1,
+              Math.min(1, (targetFaceCenterY - H * 0.42) / (H * 0.25))
+            );
+
+            // Smooth EMA for natural gaze and lean
+            smoothedHeadXRef.current =
+              smoothedHeadXRef.current * 0.78 + rawHeadX * 0.22;
+            smoothedHeadYRef.current =
+              smoothedHeadYRef.current * 0.78 + rawHeadY * 0.22;
+
             const avgGreen = roiPixels > 0 ? greenSum / roiPixels : 128;
 
             // Store rPPG green channel sample
@@ -744,8 +809,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
                 ? (Math.random() - 0.5) * Math.PI * 1.2 - Math.PI / 2
                 : prev.heartbeatAngle,
               expression: detectedExpr,
-              headX: Math.max(-1, Math.min(1, headX)),
-              headY: Math.max(-1, Math.min(1, headY)),
+              headX: Math.max(-1, Math.min(1, smoothedHeadXRef.current)),
+              headY: Math.max(-1, Math.min(1, smoothedHeadYRef.current)),
             }));
           }
 
