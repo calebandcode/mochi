@@ -8,6 +8,7 @@ import {
   sfx,
 } from "@/components/mochi-character";
 import { MilestoneCelebration } from "@/components/milestone-celebration";
+import { ConsentModal } from "@/components/consent-modal";
 import { recordStillnessSession } from "@/lib/streak";
 import { downloadQuoteCard } from "@/lib/download-quote-card";
 import { AFFIRMATIONS } from "@/lib/affirmations-data";
@@ -59,6 +60,7 @@ export default function MochiPage() {
 
   // Newspaper Card ("The Daily Mochi" — shown initially as a minimal boxy newspaper card)
   const [showNewspaperCard, setShowNewspaperCard] = useState(true);
+  const [showConsentModal, setShowConsentModal] = useState(false);
 
   // Optional side-by-side webcam preview (toggleable via "W" key)
   const [showMirrorPreview, setShowMirrorPreview] = useState(false);
@@ -860,7 +862,7 @@ export default function MochiPage() {
                   {/* Sleek Floating Black Pill CTA Button */}
                   <button
                     type="button"
-                    onClick={handleStartAwakening}
+                    onClick={() => setShowConsentModal(true)}
                     className="min-w-[230px] sm:min-w-[250px] px-9 py-3.5 rounded-full bg-[#0a0a0a] hover:bg-[#171717] text-white text-sm font-medium tracking-tight shadow-[0_14px_28px_-6px_rgba(0,0,0,0.32)] transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
                   >
                     Turn on camera
@@ -890,6 +892,16 @@ export default function MochiPage() {
           />
         )}
       </AnimatePresence>
+
+      {/* ─── Multi-Step Consent & Transparency Modal (Challenge Rules Compliance) ─── */}
+      <ConsentModal
+        isOpen={showConsentModal}
+        onClose={() => setShowConsentModal(false)}
+        onConsentGiven={() => {
+          setShowConsentModal(false);
+          handleStartAwakening();
+        }}
+      />
     </div>
   );
 }

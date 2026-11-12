@@ -111,3 +111,4 @@ export function getStillnessStreak(): { streak: number; completedToday: boolean 
     return { streak: 0, completedToday: false };
   }
 }
+
