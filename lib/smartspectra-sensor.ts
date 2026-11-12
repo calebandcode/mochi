@@ -6,19 +6,21 @@ export type BiometricExpression = "calm" | "grin" | "surprised";
 export type BreathState = "inhaling" | "exhaling" | "steady";
 
 export interface SmartSpectraSnapshot {
+  /** True ONLY when a real human face is detected in front of the camera */
+  facePresent: boolean;
   /** -1 (full exhale) to +1 (full inhale), driven strictly by real body motion */
   breathPhase: number;
   /** Human-readable current respiratory state */
   breathState: BreathState;
-  /** Rolling 36-point breathing waveform (-1 to +1) for live telemetry visualization */
+  /** Rolling 36-point breathing waveform (-1 to +1) */
   breathTrace: number[];
-  /** Rolling 36-point rPPG cardiac pulse waveform (-1 to +1) for live visualization */
+  /** Rolling 36-point rPPG cardiac pulse waveform (-1 to +1) */
   pulseTrace: number[];
-  /** Estimated breaths per minute (typically 6 - 20 br/min) */
+  /** Estimated breaths per minute (0 when no face is present) */
   breathingRateBpm: number;
-  /** Estimated heart rate in BPM (typically 58 - 95 BPM) */
+  /** Estimated heart rate in BPM (0 when no face is present) */
   pulseBpm: number;
-  /** Increments every time a cardiac heartbeat peak occurs */
+  /** Increments ONLY when a face is present and a cardiac heartbeat peak occurs */
   heartbeatCount: number;
   /** Angle (radians) around Mochi where the latest heartbeat ripple originates */
   heartbeatAngle: number;
@@ -38,11 +40,11 @@ export interface SmartSpectraSnapshot {
 /**
  * Real-time, zero-storage camera physiological sensor + Presage SmartSpectra SDK bridge.
  *
- * - Tracks real chest/shoulder/collarbone vertical lift + rPPG green-channel pulse + facial expressions
- *   ("calm" neutral -> "grin" when you smile -> "surprised" when you look surprised).
- * - No synthetic sine timer: if you hold your breath, the breathing signal stays steady;
- *   when you inhale (chest/shoulders rise), Mochi swells; when you exhale, Mochi shrinks.
- * - Nothing is ever recorded, stored, or saved.
+ * - Strictly verifies that a real human face is in front of the camera (`facePresent`)
+ *   using YCbCr skin chrominance + bilateral eye/brow/mouth contrast + micro-motion
+ *   (plus native Chromium FaceDetector when available).
+ * - If you turn the camera away, cover the lens, or step out of frame, `facePresent`
+ *   immediately becomes `false`, heartbeats stop firing, and breathing resets to 0.
  */
 export function useSmartSpectraCamera(enabled: boolean) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -51,12 +53,13 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const [error, setError] = useState<string | null>(null);
 
   const [snapshot, setSnapshot] = useState<SmartSpectraSnapshot>({
+    facePresent: false,
     breathPhase: 0,
     breathState: "steady",
     breathTrace: Array(36).fill(0),
     pulseTrace: Array(36).fill(0),
-    breathingRateBpm: 14,
-    pulseBpm: 72,
+    breathingRateBpm: 0,
+    pulseBpm: 0,
     heartbeatCount: 0,
     heartbeatAngle: -Math.PI / 2,
     expression: "calm",
@@ -73,6 +76,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const breathTraceRef = useRef<number[]>(Array(36).fill(0));
   const pulseTraceRef = useRef<number[]>(Array(36).fill(0));
   const lastTraceSampleRef = useRef<number>(0);
+  const prevFrameLumaRef = useRef<Float32Array | null>(null);
+  const faceConfidenceRef = useRef<number>(0);
 
   const lastBeatTimeRef = useRef<number>(0);
   const beatCounterRef = useRef<number>(0);
@@ -81,7 +86,7 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const breathCrossingsRef = useRef<number[]>([]);
   const wsDataTimestampRef = useRef<number>(0);
 
-  // Neutral face baseline calibrated over the first ~1.2s of camera stream
+  // Neutral face baseline calibrated only while a face is present
   const baselineRef = useRef<{
     samples: number;
     mouthDarkRatio: number;
@@ -99,6 +104,11 @@ export function useSmartSpectraCamera(enabled: boolean) {
     until: number;
   }>({ expr: "calm", until: 0 });
 
+  const expressionConsecutiveRef = useRef<{
+    candidate: BiometricExpression;
+    count: number;
+  }>({ candidate: "calm", count: 0 });
+
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
@@ -112,6 +122,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
     breathCrossingsRef.current = [];
     breathTraceRef.current = Array(36).fill(0);
     pulseTraceRef.current = Array(36).fill(0);
+    prevFrameLumaRef.current = null;
+    faceConfidenceRef.current = 0;
     smoothedBreathRef.current = 0;
     prevBreathPhaseRef.current = 0;
     baselineRef.current = {
@@ -121,6 +133,14 @@ export function useSmartSpectraCamera(enabled: boolean) {
       mouthAspect: 1.0,
     };
     setIsReady(false);
+    setSnapshot((prev) => ({
+      ...prev,
+      facePresent: false,
+      breathPhase: 0,
+      breathState: "steady",
+      pulseBpm: 0,
+      breathingRateBpm: 0,
+    }));
   }, []);
 
   useEffect(() => {
@@ -149,48 +169,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
                   ? payload.cameras[0].name
                   : prev.cameraName,
             }));
-            return;
-          }
-
-          if (payload.type === "metrics") {
-            wsDataTimestampRef.current = performance.now();
-
-            setSnapshot((prev) => {
-              const isBeat = Boolean(payload.heartbeatPeak);
-              if (isBeat) {
-                beatCounterRef.current += 1;
-              }
-              const nextPhase =
-                typeof payload.breathPhase === "number"
-                  ? Math.max(-1, Math.min(1, payload.breathPhase))
-                  : prev.breathPhase;
-              const nextState: BreathState =
-                nextPhase > 0.12
-                  ? "inhaling"
-                  : nextPhase < -0.12
-                  ? "exhaling"
-                  : "steady";
-
-              return {
-                ...prev,
-                breathPhase: nextPhase,
-                breathState: nextState,
-                breathingRateBpm:
-                  typeof payload.breathingRateBpm === "number"
-                    ? payload.breathingRateBpm
-                    : prev.breathingRateBpm,
-                pulseBpm:
-                  typeof payload.pulseBpm === "number"
-                    ? Math.round(payload.pulseBpm)
-                    : prev.pulseBpm,
-                heartbeatCount: beatCounterRef.current,
-                heartbeatAngle: isBeat
-                  ? (Math.random() - 0.5) * Math.PI * 1.4 - Math.PI / 2
-                  : prev.heartbeatAngle,
-                expression: payload.expression || prev.expression,
-                sdkBridgeConnected: true,
-              };
-            });
           }
         } catch {
           // Ignore malformed packet
@@ -238,69 +216,219 @@ export function useSmartSpectraCamera(enabled: boolean) {
         canvas.height = H;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
+        // Optional Chromium native FaceDetector if supported by the browser
+        type NativeFaceDetector = {
+          detect: (
+            source: HTMLVideoElement
+          ) => Promise<Array<{ boundingBox: DOMRectReadOnly }>>;
+        };
+        let nativeDetector: NativeFaceDetector | null = null;
+        let nativeFaceResult: boolean | null = null;
+        let lastNativeCheck = 0;
+
+        if (typeof window !== "undefined" && "FaceDetector" in window) {
+          try {
+            const FD = (
+              window as unknown as {
+                FaceDetector: new (opts?: {
+                  fastMode?: boolean;
+                  maxDetectedFaces?: number;
+                }) => NativeFaceDetector;
+              }
+            ).FaceDetector;
+            nativeDetector = new FD({ fastMode: true, maxDetectedFaces: 1 });
+          } catch {
+            nativeDetector = null;
+          }
+        }
+
         let prevSign = 0;
 
         const processFrame = () => {
           if (cancelled) return;
           const now = performance.now();
 
-          if (now - wsDataTimestampRef.current < 500) {
-            rafId = requestAnimationFrame(processFrame);
-            return;
-          }
-
           const video = videoRef.current;
           if (ctx && video && video.readyState >= 2) {
+            // Query native FaceDetector every ~220ms if available
+            if (nativeDetector && now - lastNativeCheck > 220) {
+              lastNativeCheck = now;
+              nativeDetector
+                .detect(video)
+                .then((faces) => {
+                  nativeFaceResult = Array.isArray(faces) && faces.length > 0;
+                })
+                .catch(() => {
+                  nativeFaceResult = null;
+                });
+            }
+
             ctx.drawImage(video, 0, 0, W, H);
             const frame = ctx.getImageData(0, 0, W, H).data;
 
-            // --- 1. Locate Face Centroid & Forehead/Cheek rPPG Skin ROI ---
+            const currentLuma = new Float32Array(W * H);
+
+            // --- 1. Strict Human Face Verification (YCbCr Skin + Eye/Mouth Contrast + Bounding Shape) ---
             let skinSumX = 0;
             let skinSumY = 0;
-            let skinWeightSum = 0;
+            let skinCountCenter = 0;
+            let centerTotal = 0;
+            let skinCountOuter = 0;
+            let outerTotal = 0;
+
             let greenSum = 0;
             let lumaSum = 0;
             let roiPixels = 0;
 
-            for (let y = 8; y < 74; y++) {
-              for (let x = 22; x < 106; x++) {
+            for (let y = 0; y < H; y++) {
+              for (let x = 0; x < W; x++) {
                 const idx = (y * W + x) * 4;
                 const r = frame[idx];
                 const g = frame[idx + 1];
                 const b = frame[idx + 2];
+                const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+                currentLuma[y * W + x] = luma;
 
-                // Detect warm facial skin pixels across diverse skin tones
-                const isSkin =
-                  r > 45 &&
-                  g > 30 &&
-                  r > b * 1.05 &&
-                  r >= g * 0.9 &&
-                  Math.abs(r - g) < 110;
+                // YCbCr chrominance human skin test (rejects white/grey walls, dark rooms, wood, etc.)
+                const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+                const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
 
-                if (isSkin) {
-                  skinSumX += x * 2.5;
-                  skinSumY += y * 2.5;
-                  skinWeightSum += 2.5;
+                const isHumanSkin =
+                  luma > 35 &&
+                  luma < 235 &&
+                  r > 55 &&
+                  g > 35 &&
+                  b > 20 &&
+                  r > g &&
+                  r > b + 10 &&
+                  cb >= 77 &&
+                  cb <= 127 &&
+                  cr >= 133 &&
+                  cr <= 173;
+
+                const inCenterBox = x >= 26 && x <= 102 && y >= 10 && y <= 76;
+                if (inCenterBox) {
+                  centerTotal++;
+                  if (isHumanSkin) {
+                    skinCountCenter++;
+                    skinSumX += x;
+                    skinSumY += y;
+                  }
+                } else if (x < 14 || x > W - 14 || y < 8) {
+                  outerTotal++;
+                  if (isHumanSkin) {
+                    skinCountOuter++;
+                  }
                 }
 
                 if (x >= 40 && x <= 88 && y >= 18 && y <= 62) {
                   greenSum += g;
-                  lumaSum += 0.299 * r + 0.587 * g + 0.114 * b;
+                  lumaSum += luma;
                   roiPixels++;
                 }
               }
             }
 
+            const centerSkinRatio =
+              centerTotal > 0 ? skinCountCenter / centerTotal : 0;
+            const outerSkinRatio =
+              outerTotal > 0 ? skinCountOuter / outerTotal : 0;
+
             const faceCenterX =
-              skinWeightSum > 20 ? skinSumX / skinWeightSum : W / 2;
+              skinCountCenter > 40 ? skinSumX / skinCountCenter : W / 2;
             const faceCenterY =
-              skinWeightSum > 20 ? skinSumY / skinWeightSum : H * 0.42;
+              skinCountCenter > 40 ? skinSumY / skinCountCenter : H * 0.42;
+
+            // Check internal facial feature contrast (eyes/brows/nose/mouth vs flat wall/hand)
+            const fLeft = Math.max(16, Math.round(faceCenterX - 24));
+            const fRight = Math.min(W - 16, Math.round(faceCenterX + 24));
+            const fTop = Math.max(10, Math.round(faceCenterY - 20));
+            const fBottom = Math.min(H - 12, Math.round(faceCenterY + 22));
+
+            let featureEdgeSum = 0;
+            let featureDarkSpots = 0; // eyes, eyebrows, nostrils, mouth corners
+            let featurePixels = 0;
+            const avgFaceLuma = roiPixels > 0 ? lumaSum / roiPixels : 128;
+
+            for (let y = fTop; y < fBottom; y++) {
+              for (let x = fLeft; x < fRight; x++) {
+                const l = currentLuma[y * W + x];
+                const lAbove = currentLuma[(y - 2) * W + x];
+                const lLeft = currentLuma[y * W + (x - 2)];
+                featureEdgeSum +=
+                  Math.abs(l - lAbove) * 0.7 + Math.abs(l - lLeft) * 0.3;
+                if (l < avgFaceLuma * 0.72) {
+                  featureDarkSpots++;
+                }
+                featurePixels++;
+              }
+            }
+
+            const avgFeatureContrast =
+              featurePixels > 0 ? featureEdgeSum / featurePixels : 0;
+            const darkFeatureRatio =
+              featurePixels > 0 ? featureDarkSpots / featurePixels : 0;
+
+            // Frame-to-frame motion check (rejects completely frozen frame or wild camera pan)
+            let frameDiffSum = 0;
+            if (prevFrameLumaRef.current) {
+              for (let i = 0; i < currentLuma.length; i += 4) {
+                frameDiffSum += Math.abs(
+                  currentLuma[i] - prevFrameLumaRef.current[i]
+                );
+              }
+            }
+            prevFrameLumaRef.current = currentLuma;
+            const avgFrameMotion = frameDiffSum / (currentLuma.length / 4);
+
+            //Heuristic face verdict:
+            // 1. Sufficient human skin in center (at least 18%)
+            // 2. Not a uniform beige wall covering the entire outer border with low contrast
+            // 3. Real facial feature contrast (eyes/brows/mouth: avgFeatureContrast >= 4.2 and darkFeatureRatio between 3% and 42%)
+            // 4. Camera isn't being wildly swung around (avgFrameMotion < 28)
+            const heuristicFaceDetected =
+              centerSkinRatio >= 0.18 &&
+              (centerSkinRatio > outerSkinRatio * 1.25 ||
+                avgFeatureContrast > 7.5) &&
+              avgFeatureContrast >= 4.2 &&
+              darkFeatureRatio >= 0.025 &&
+              darkFeatureRatio <= 0.45 &&
+              avgFaceLuma > 32 &&
+              avgFaceLuma < 238 &&
+              avgFrameMotion < 28;
+
+            const rawFaceDetected =
+              nativeFaceResult !== null
+                ? nativeFaceResult && centerSkinRatio >= 0.1
+                : heuristicFaceDetected;
+
+            // Smooth confidence over ~6 frames so a single frame blink doesn't flicker
+            faceConfidenceRef.current =
+              faceConfidenceRef.current * 0.75 + (rawFaceDetected ? 0.25 : 0);
+            const facePresent = faceConfidenceRef.current >= 0.45;
+
+            if (!facePresent) {
+              // No face in view -> immediately stop heartbeats and decay breathing to 0
+              smoothedBreathRef.current *= 0.85;
+              setSnapshot((prev) => ({
+                ...prev,
+                facePresent: false,
+                breathPhase:
+                  Math.abs(smoothedBreathRef.current) < 0.02
+                    ? 0
+                    : smoothedBreathRef.current,
+                breathState: "steady",
+                pulseBpm: 0,
+                breathingRateBpm: 0,
+                expression: "calm",
+              }));
+              rafId = requestAnimationFrame(processFrame);
+              return;
+            }
 
             const headX = -((faceCenterX - W / 2) / (W * 0.25));
             const headY = (faceCenterY - H * 0.42) / (H * 0.25);
-
             const avgGreen = roiPixels > 0 ? greenSum / roiPixels : 128;
-            const avgFaceLuma = roiPixels > 0 ? lumaSum / roiPixels : 128;
 
             // Store rPPG green channel sample
             greenSignalBuffer.current.push({ t: now, v: avgGreen });
@@ -309,8 +437,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
             );
 
             // --- 2. Real Chest / Shoulder / Collarbone Breathing Tracker ---
-            // Measures vertical edge centroid in the upper-chest & shoulder zone below the face,
-            // combined with vertical head/neck rise. No synthetic sine wave is used!
             const chestTopY = Math.max(
               48,
               Math.min(H - 18, Math.round(faceCenterY + 14))
@@ -323,19 +449,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             for (let y = chestTopY; y < H - 2; y++) {
               for (let x = chestLeftX; x < chestRightX; x++) {
-                const idx = (y * W + x) * 4;
-                const idxAbove = ((y - 2) * W + x) * 4;
-
-                const luma =
-                  0.299 * frame[idx] +
-                  0.587 * frame[idx + 1] +
-                  0.114 * frame[idx + 2];
-                const lumaAbove =
-                  0.299 * frame[idxAbove] +
-                  0.587 * frame[idxAbove + 1] +
-                  0.114 * frame[idxAbove + 2];
-
-                // Vertical contrast locks onto collarbones, shoulders, and shirt neckline
+                const luma = currentLuma[y * W + x];
+                const lumaAbove = currentLuma[(y - 2) * W + x];
                 const verticalGrad = Math.abs(luma - lumaAbove);
                 const weight = verticalGrad + 2.0;
                 edgeWeightedY += y * weight;
@@ -348,7 +463,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
                 ? edgeWeightedY / edgeWeightTotal
                 : (chestTopY + H) / 2;
 
-            // When inhaling, shoulders & face rise up on screen (smaller Y -> higher lift value)
             const respiratoryLift = -(
               shoulderCentroidY * 0.65 +
               faceCenterY * 0.35
@@ -366,7 +480,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
             let rawBreath = 0;
             if (bBuf.length > 8) {
               const mean = bBuf.reduce((acc, s) => acc + s.v, 0) / bBuf.length;
-              // Use a physical deadband (0.26 px) so sitting still / holding breath stays near 0
               let maxDev = 0.26;
               for (const s of bBuf) {
                 const d = Math.abs(s.v - mean);
@@ -376,7 +489,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
                 bBuf.slice(-4).reduce((a, s) => a + s.v, 0) /
                 Math.min(4, bBuf.length);
               const diff = recent - mean;
-              // Noise deadzone for tiny sensor jitter
               const effectiveDiff =
                 Math.abs(diff) < 0.04
                   ? 0
@@ -404,7 +516,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
               breathState = "exhaling";
             }
 
-            // Detect upward zero-crossings for breathing rate BPM
             if (Math.abs(currentBreath) > 0.15) {
               const currentSign = currentBreath >= 0 ? 1 : -1;
               if (prevSign < 0 && currentSign > 0) {
@@ -451,10 +562,9 @@ export function useSmartSpectraCamera(enabled: boolean) {
             for (let y = mCenterY - 9; y <= mCenterY + 9; y++) {
               for (let x = mCenterX - 18; x <= mCenterX + 18; x++) {
                 const idx = (y * W + x) * 4;
-                const r = frame[idx];
                 const g = frame[idx + 1];
                 const b = frame[idx + 2];
-                const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+                const luma = currentLuma[y * W + x];
                 mouthBoxTotal++;
 
                 if (luma < avgFaceLuma * 0.68) {
@@ -497,31 +607,50 @@ export function useSmartSpectraCamera(enabled: boolean) {
               base.samples += 1;
             }
 
-            let detectedExpr: BiometricExpression = "calm";
+            // Raw frame detection with tightened thresholds (ignores subtle lip/breathing twitches)
+            let rawCandidate: BiometricExpression = "calm";
 
             if (
-              darkRatio > base.mouthDarkRatio + 0.065 &&
-              mouthHeight >= 6 &&
-              mouthAspect < 2.1
+              darkRatio > base.mouthDarkRatio + 0.085 &&
+              mouthHeight >= 8 &&
+              mouthAspect < 1.85
             ) {
-              detectedExpr = "surprised";
-              expressionHoldRef.current = {
-                expr: "surprised",
-                until: now + 900,
-              };
+              rawCandidate = "surprised";
             } else if (
-              brightRatio > base.mouthBrightRatio + 0.032 ||
-              (darkRatio > base.mouthDarkRatio + 0.028 &&
-                mouthWidth >= 14 &&
-                mouthAspect >= 2.1)
+              brightRatio > base.mouthBrightRatio + 0.042 ||
+              (mouthWidth >= 16 &&
+                mouthAspect >= 2.25 &&
+                darkRatio > base.mouthDarkRatio + 0.02)
             ) {
-              detectedExpr = "grin";
+              rawCandidate = "grin";
+            }
+
+            // Hysteresis & consecutive confirmation:
+            // Require expression to persist steadily across at least 6 consecutive frames (~200ms)
+            const cons = expressionConsecutiveRef.current;
+            if (rawCandidate === cons.candidate) {
+              cons.count += 1;
+            } else {
+              cons.candidate = rawCandidate;
+              cons.count = 1;
+            }
+
+            let detectedExpr: BiometricExpression = expressionHoldRef.current.expr;
+
+            // Only switch if deliberately confirmed across multiple frames
+            if (cons.count >= 6 && cons.candidate !== "calm") {
+              detectedExpr = cons.candidate;
               expressionHoldRef.current = {
-                expr: "grin",
-                until: now + 900,
+                expr: cons.candidate,
+                until: now + 2800, // hold stable expression for 2.8s
               };
-            } else if (now < expressionHoldRef.current.until) {
-              detectedExpr = expressionHoldRef.current.expr;
+            } else if (now >= expressionHoldRef.current.until) {
+              // Smoothly return to calm baseline
+              detectedExpr = "calm";
+              expressionHoldRef.current = {
+                expr: "calm",
+                until: now + 1200,
+              };
             }
 
             if (detectedExpr === "calm" && base.samples >= 35) {
@@ -531,7 +660,7 @@ export function useSmartSpectraCamera(enabled: boolean) {
                 base.mouthBrightRatio * 0.992 + brightRatio * 0.008;
             }
 
-            // --- 4. Heartbeat (rPPG pulse peak + edge ripple trigger) ---
+            // --- 4. Heartbeat (rPPG pulse peak + edge ripple trigger, ONLY when face is present) ---
             let pulseBpm = 72;
             let normalizedPulseWave = 0;
             const gBuf = greenSignalBuffer.current;
@@ -561,7 +690,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
               triggeredBeat = true;
             }
 
-            // Sample rolling waveform traces at ~12 Hz for smooth live SmartSpectra plots
             if (now - lastTraceSampleRef.current >= 80) {
               lastTraceSampleRef.current = now;
               breathTraceRef.current = [
@@ -579,6 +707,7 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             setSnapshot((prev) => ({
               ...prev,
+              facePresent: true,
               breathPhase: currentBreath,
               breathState,
               breathTrace: breathTraceRef.current,
