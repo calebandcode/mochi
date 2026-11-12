@@ -1,6 +1,6 @@
-# Mochi (mochi.) — The Living Squircle Companion
+# Mochi (mochi.) — A Bio-Responsive Companion for Daily Stillness
 
-> **A contactless, bio-responsive web companion for daily stillness and nervous-system co-regulation, powered by the Presage SmartSpectra SDK.**
+> **Senses your pulse, breath, and focus through your camera—no wearables required.**
 
 Built for the **[Presage SmartSpectra SDK Challenge](https://dev.to/challenges/presage-2026-11-04)** on DEV.to.
 
@@ -8,7 +8,7 @@ Built for the **[Presage SmartSpectra SDK Challenge](https://dev.to/challenges/p
 
 ## 🌟 Overview
 
-**Mochi** is a living, bio-responsive web companion (zero install required) that uses your webcam to sense your **heartbeat (rPPG pulse)**, **breathing cadence**, **facial expressions**, and **head position** in real time—without wearables or sensors.
+**Mochi** is a bio-responsive web companion (zero install required) that uses your webcam to sense your **heartbeat (rPPG pulse)**, **breathing cadence**, **facial expressions**, and **head position** in real time—without wearables or sensors.
 
 Instead of cold medical charts or clinical graphs, Mochi translates human vitals into warm, playful co-regulation:
 - **Awakening by Heartbeat**: Mochi starts dormant. When you turn on your camera, two ambient blood-flow streams meet as your resting pulse is calibrated, waking Mochi up.
