@@ -47,9 +47,9 @@ const dancingScript = Dancing_Script({
 });
 
 export const metadata: Metadata = {
-  title: "Mochi — A Little Creature That Breathes With You",
+  title: "Mochi — A Daily Minute of Stillness",
   description:
-    "Mochi breathes, beats, and smiles along with you through your camera using Presage SmartSpectra sensing, and helps you slow down by breathing with you.",
+    "Pause and be still with Mochi. A daily bio-sensing stillness companion that breathes, feels your pulse through your camera, and helps you slow down.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

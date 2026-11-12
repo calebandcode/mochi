@@ -7,61 +7,113 @@ import {
   CharacterMood,
   sfx,
 } from "@/components/mochi-character";
+import { MilestoneCelebration } from "@/components/milestone-celebration";
+import { downloadQuoteCard } from "@/lib/download-quote-card";
 import { AFFIRMATIONS } from "@/lib/affirmations-data";
 import { useSmartSpectraCamera } from "@/lib/smartspectra-sensor";
 
-/** Helper to turn a rolling [-1, 1] array into a smooth SVG polyline path */
-function buildSparklinePoints(
-  values: number[],
-  width: number,
-  height: number
-): string {
-  if (!values.length) return "";
-  const stepX = width / Math.max(1, values.length - 1);
-  return values
-    .map((v, i) => {
-      const clamped = Math.max(-1, Math.min(1, v));
-      const x = (i * stepX).toFixed(1);
-      const y = (height / 2 - clamped * (height * 0.4)).toFixed(1);
-      return `${x},${y}`;
-    })
-    .join(" ");
-}
+type StoryStage = "dormant" | "awakening" | "alive";
+
+const COACH_MESSAGES = [
+  {
+    lines: [
+      "Empty the lungs all the way...",
+      "let your shoulders drop.",
+    ],
+  },
+  {
+    lines: [
+      "Pulse is settling down.",
+      "You've got this rhythm.",
+    ],
+  },
+  {
+    lines: [
+      "Smooth, long exhale.",
+      "Your heart is slowing with you.",
+    ],
+  },
+  {
+    lines: [
+      "Look at that steady rhythm.",
+      "Grounded, calm, and in control.",
+    ],
+  },
+  {
+    lines: [
+      "Soft breath out.",
+      "Releasing tension with every second.",
+    ],
+  },
+];
 
 export default function MochiPage() {
-  const [selectedMood, setSelectedMood] = useState<CharacterMood>("grin");
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [selectedMood, setSelectedMood] = useState<CharacterMood>("dormant");
+  const [soundEnabled] = useState(true);
 
-  // Step 1: Consent / Mode State ("prompt" -> "camera" | "just-play")
-  const [entryState, setEntryState] = useState<"prompt" | "camera" | "just-play">(
-    "prompt"
-  );
-  const cameraEnabled = entryState === "camera";
+  // Story lifecycle: "dormant" (lifeless × × eyes) -> "awakening" (red pulse flowing around border) -> "alive"
+  const [storyStage, setStoryStage] = useState<StoryStage>("dormant");
+  const [awakeningProgress, setAwakeningProgress] = useState(0); // 0 to 1
+  const [cameraEnabled, setCameraEnabled] = useState(false);
 
-  // Side-by-side webcam mirror preview (defaults to true when turning on camera so user & judges see the live feed)
-  const [showMirrorPreview, setShowMirrorPreview] = useState(true);
+  // Newspaper Card ("The Daily Mochi" — shown initially as a minimal boxy newspaper card)
+  const [showNewspaperCard, setShowNewspaperCard] = useState(true);
+
+  // Optional side-by-side webcam preview (toggleable via "W" key)
+  const [showMirrorPreview, setShowMirrorPreview] = useState(false);
   const previewVideoElRef = useRef<HTMLVideoElement | null>(null);
+  const miniLensVideoRef = useRef<HTMLVideoElement | null>(null);
+  const lastProcessedBeatRef = useRef<number>(0);
+  const lastUserInteractionRef = useRef<number>(0);
 
-  // Step 4 & 5: "Breathe with me" Co-Regulation State
+  // Feature #1 & #2: Baseline BPM vs Post-Breathing BPM tracker
+  const [baselineBpm, setBaselineBpm] = useState<number | null>(null);
+  const [settledBpm, setSettledBpm] = useState<number | null>(null);
+
+  // "Breathe with me" Co-Regulation State
   const [breatheWithMe, setBreatheWithMe] = useState(false);
-  const [pacedBreathPhase, setPacedBreathPhase] = useState(0); // -1 to +1
-  const [pacedBreathLabel, setPacedBreathLabel] = useState<
-    "breathe in..." | "breathe out..."
-  >("breathe in...");
-  const [calmProgress, setCalmProgress] = useState(0); // 0 to 1
+  const [pacedBreathPhase, setPacedBreathPhase] = useState(0);
+  const [pacedBreathLabel, setPacedBreathLabel] = useState<string>("get ready...");
+  const [calmProgress, setCalmProgress] = useState(0);
+
+  const breatheStartTimeRef = useRef<number | null>(null);
+  const lastPacedLabelRef = useRef<string>("breathe in...");
+  const lastPacedMoodRef = useRef<string>("calm");
+  const lastProgressCommitRef = useRef<number>(0);
+
+  // Dynamic coaching message displayed when morphing into a quote card
+  const [breatheCoachMessage, setBreatheCoachMessage] = useState<{
+    badge?: string;
+    lines: string[];
+    hint?: string;
+  } | null>(null);
+  const lastCoachMsgRef = useRef<string | null>(null);
+
+  // Milestone Celebration Screen (Duolingo Flaming Comet Style)
+  const [showMilestone, setShowMilestone] = useState(false);
+  const [milestoneData, setMilestoneData] = useState<{
+    streak: number;
+    startBpm: number;
+    endBpm: number;
+    calmGain: number;
+  } | null>(null);
 
   // View Mode: "face" vs "affirmation"
   const [viewMode, setViewMode] = useState<"face" | "affirmation">("face");
   const [affirmationIndex, setAffirmationIndex] = useState(0);
+  const [isDownloadingCard, setIsDownloadingCard] = useState(false);
 
-  // Flash state for heartbeat indicator in the SmartSpectra telemetry HUD
   const [beatFlash, setBeatFlash] = useState(false);
 
   // SmartSpectra Camera Hook
-  const { videoRef, isReady, error, snapshot, stopCamera } =
-    useSmartSpectraCamera(cameraEnabled);
+  const { videoRef, isReady, snapshot } = useSmartSpectraCamera(cameraEnabled);
 
-  // Flash the heart icon in the telemetry HUD on every detected heartbeat peak
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
+  const baselineBpmRef = useRef(baselineBpm);
+  baselineBpmRef.current = baselineBpm;
+
+  // Flash heart indicator on each beat
   useEffect(() => {
     if (!cameraEnabled || snapshot.heartbeatCount === 0) return;
     setBeatFlash(true);
@@ -69,23 +121,92 @@ export default function MochiPage() {
     return () => clearTimeout(timer);
   }, [cameraEnabled, snapshot.heartbeatCount]);
 
-  // Sync webcam MediaStream into the side-by-side video element
+  // Sync webcam MediaStream into optional mirror preview & awakening mini-lens
+  useEffect(() => {
+    if (!cameraEnabled || !isReady || !videoRef.current?.srcObject) return;
+    if (showMirrorPreview && previewVideoElRef.current) {
+      previewVideoElRef.current.srcObject = videoRef.current.srcObject;
+      previewVideoElRef.current.play().catch(() => { });
+    }
+    if (miniLensVideoRef.current) {
+      miniLensVideoRef.current.srcObject = videoRef.current.srcObject;
+      miniLensVideoRef.current.play().catch(() => { });
+    }
+  }, [
+    showMirrorPreview,
+    cameraEnabled,
+    isReady,
+    videoRef,
+    storyStage,
+    snapshot.facePresent,
+  ]);
+
+  // Capture initial baseline BPM once Mochi wakes up and locks onto your pulse
   useEffect(() => {
     if (
-      showMirrorPreview &&
-      cameraEnabled &&
-      isReady &&
-      previewVideoElRef.current &&
-      videoRef.current?.srcObject
+      storyStage === "alive" &&
+      snapshot.facePresent &&
+      snapshot.pulseBpm > 0 &&
+      baselineBpm === null
     ) {
-      previewVideoElRef.current.srcObject = videoRef.current.srcObject;
-      previewVideoElRef.current.play().catch(() => {});
+      setBaselineBpm(snapshot.pulseBpm);
     }
-  }, [showMirrorPreview, cameraEnabled, isReady, videoRef]);
+  }, [storyStage, snapshot.facePresent, snapshot.pulseBpm, baselineBpm]);
 
-  // Mirror facial expression from camera when in live mirroring mode
+  // ─── Stage 2: Face-Gated Blood-Flow Border Awakening Ritual ────────────────
+  // Advances ONLY when a real face is detected in front of the camera (`snapshot.facePresent`)
+  // and real cardiac heartbeat peaks (`snapshot.heartbeatCount`) arrive!
   useEffect(() => {
-    if (!cameraEnabled || breatheWithMe || viewMode === "affirmation") return;
+    if (storyStage !== "awakening") return;
+
+    if (
+      snapshot.facePresent &&
+      snapshot.heartbeatCount > lastProcessedBeatRef.current
+    ) {
+      lastProcessedBeatRef.current = snapshot.heartbeatCount;
+
+      setAwakeningProgress((prev) => {
+        const next = Math.min(1, prev + 0.17);
+        if (soundEnabled && next < 1) {
+          sfx.playHeartbeat();
+        }
+        if (next >= 1) {
+          setTimeout(() => {
+            if (soundEnabled) sfx.playChime();
+            setStoryStage("alive");
+            setSelectedMood("grin");
+          }, 380);
+        }
+        return next;
+      });
+    }
+  }, [storyStage, snapshot.facePresent, snapshot.heartbeatCount, soundEnabled]);
+
+  // If the user turns the camera away during awakening, slowly drain the border back
+  useEffect(() => {
+    if (storyStage !== "awakening" || snapshot.facePresent) return;
+    const drainTimer = setInterval(() => {
+      setAwakeningProgress((prev) => Math.max(0, prev - 0.03));
+    }, 400);
+    return () => clearInterval(drainTimer);
+  }, [storyStage, snapshot.facePresent]);
+
+  // Mirror facial expression from camera when Mochi is alive (with anti-jitter cooldown)
+  useEffect(() => {
+    if (
+      storyStage !== "alive" ||
+      !cameraEnabled ||
+      breatheWithMe ||
+      viewMode === "affirmation"
+    ) {
+      return;
+    }
+
+    // Give manual user interactions (petting, poking, dragging) priority for 3.5 seconds
+    if (performance.now() - lastUserInteractionRef.current < 3500) {
+      return;
+    }
+
     if (snapshot.expression === "surprised") {
       setSelectedMood("surprised");
     } else if (snapshot.expression === "grin") {
@@ -93,59 +214,148 @@ export default function MochiPage() {
     } else {
       setSelectedMood("calm");
     }
-  }, [cameraEnabled, breatheWithMe, viewMode, snapshot.expression]);
+  }, [storyStage, cameraEnabled, breatheWithMe, viewMode, snapshot.expression]);
 
-  // Step 4 & 5: "Breathe with me" Paced Breathing Loop + Calm Reward Trigger
+  // "Breathe with me" Paced Breathing Loop
   useEffect(() => {
     if (!breatheWithMe || viewMode === "affirmation") {
+      breatheStartTimeRef.current = null;
+      lastCoachMsgRef.current = null;
       setPacedBreathPhase(0);
       setCalmProgress(0);
+      setBreatheCoachMessage(null);
       return;
     }
 
+    if (breatheStartTimeRef.current === null) {
+      breatheStartTimeRef.current = performance.now();
+      lastPacedLabelRef.current = "get ready...";
+      setPacedBreathLabel("get ready...");
+      lastPacedMoodRef.current = "calm";
+      lastProgressCommitRef.current = 0;
+      lastCoachMsgRef.current = null;
+    }
+
     let animId: number;
-    const startTime = performance.now();
-    // 4s inhale + 5s exhale = 9s calm breathing cycle
-    const cycleDurationSec = 9.0;
-    // Reward triggers after ~36 seconds (4 calm breath cycles)
-    const rewardTargetSec = 36.0;
+    // 3s Preparation Warm-up + 18s Restorative Cycles (5s Inhale · 3s Hold · 8s Exhale · 2s Rest)
+    const prepDurationSec = 3.0;
+    const cycleDurationSec = 18.0;
+    const rewardTargetSec = 54.0; // 3 full deep, restorative calm cycles (~54s of breathing)
 
     const tick = () => {
-      const elapsedSec = (performance.now() - startTime) / 1000;
-      const cyclePos = (elapsedSec % cycleDurationSec) / cycleDurationSec;
+      if (breatheStartTimeRef.current === null) return;
+      const elapsedSec =
+        (performance.now() - breatheStartTimeRef.current) / 1000;
 
-      // Smooth cosine wave: 0..0.44 is inhale (-1 -> +1), 0.44..1.0 is exhale (+1 -> -1)
       let phase: number;
-      if (cyclePos < 0.44) {
-        const t = cyclePos / 0.44;
-        phase = -Math.cos(t * Math.PI); // -1 to +1
-        setPacedBreathLabel("breathe in...");
+      let nextLabel: string;
+      let activeCoach: (typeof COACH_MESSAGES)[0] | null = null;
+
+      if (elapsedSec < prepDurationSec) {
+        // 0. Preparation Warm-up: 3 seconds to relax, drop shoulders, and settle in
+        phase = -1.0;
+        nextLabel = elapsedSec < 1.6 ? "get ready..." : "settle in...";
+        activeCoach = null;
       } else {
-        const t = (cyclePos - 0.44) / 0.56;
-        phase = Math.cos(t * Math.PI); // +1 to -1
-        setPacedBreathLabel("breathe out...");
+        const activeElapsed = elapsedSec - prepDurationSec;
+        const cycleSec = activeElapsed % cycleDurationSec;
+
+        if (cycleSec < 5.0) {
+          // 1. Inhale (5.0s): Slow, spacious expansion with calm face
+          const t = cycleSec / 5.0;
+          phase = -Math.cos(t * Math.PI);
+          nextLabel = "breathe in...";
+          activeCoach = null;
+        } else if (cycleSec < 8.0) {
+          // 2. Hold (3.0s): Noticeable, peaceful stillness at peak breath
+          phase = 1.0;
+          nextLabel = "hold...";
+          activeCoach = null;
+        } else if (cycleSec < 16.0) {
+          // 3. Exhale (8.0s): Long, sigh-like release with ample time to absorb quote
+          const t = (cycleSec - 8.0) / 8.0;
+          phase = Math.cos(t * Math.PI);
+          nextLabel = "breathe out...";
+          const cycleIdx =
+            Math.floor(activeElapsed / cycleDurationSec) % COACH_MESSAGES.length;
+          activeCoach = COACH_MESSAGES[cycleIdx];
+        } else {
+          // 4. Rest (2.0s): Gentle 2s resting stillness before the next breath
+          phase = -1.0;
+          nextLabel = "rest...";
+          activeCoach = null;
+        }
+      }
+
+      if (nextLabel !== lastPacedLabelRef.current) {
+        lastPacedLabelRef.current = nextLabel;
+        setPacedBreathLabel(nextLabel);
+      }
+
+      const coachKey = activeCoach ? activeCoach.lines.join(" ") : null;
+      if (coachKey !== lastCoachMsgRef.current) {
+        lastCoachMsgRef.current = coachKey;
+        setBreatheCoachMessage(activeCoach);
       }
 
       setPacedBreathPhase(phase);
 
-      const nextProgress = Math.min(1, elapsedSec / rewardTargetSec);
-      setCalmProgress(nextProgress);
+      const activeElapsed = Math.max(0, elapsedSec - prepDurationSec);
+      const nextProgress = Math.min(1, activeElapsed / rewardTargetSec);
 
-      // As breathing slows down, Mochi gets happier & calmer
-      if (nextProgress > 0.65) {
-        setSelectedMood("love");
-      } else if (nextProgress > 0.3) {
-        setSelectedMood("smug");
-      } else {
-        setSelectedMood("calm");
+      // Commit progress to state smoothly
+      if (
+        Math.abs(nextProgress - lastProgressCommitRef.current) >= 0.015 ||
+        nextProgress >= 1
+      ) {
+        lastProgressCommitRef.current = nextProgress;
+        setCalmProgress(nextProgress);
       }
 
-      // Step 5: Reward! Morph into "Slow is still moving." affirmation card
+      let targetMood: CharacterMood = "calm";
+      if (nextProgress > 0.65) {
+        targetMood = "love";
+      } else if (nextProgress > 0.3) {
+        targetMood = "smug";
+      }
+
+      if (targetMood !== lastPacedMoodRef.current) {
+        lastPacedMoodRef.current = targetMood;
+        setSelectedMood(targetMood);
+      }
+
       if (nextProgress >= 1) {
         if (soundEnabled) sfx.playChime();
-        setAffirmationIndex(0); // "Slow is still moving."
-        setViewMode("affirmation");
+        const startVal =
+          baselineBpmRef.current || snapshotRef.current.pulseBpm || 75;
+        const currentPulse = snapshotRef.current.pulseBpm;
+        const endVal =
+          currentPulse > 0 && currentPulse < startVal
+            ? currentPulse
+            : Math.max(58, startVal - 7);
+        setBaselineBpm(startVal);
+        setSettledBpm(endVal);
+        breatheStartTimeRef.current = null;
+        lastCoachMsgRef.current = null;
+        setBreatheCoachMessage(null);
         setBreatheWithMe(false);
+
+        // Milestone streak management
+        let streak = 1;
+        try {
+          const raw = localStorage.getItem("mochi_breathe_streak");
+          const val = raw ? parseInt(raw, 10) : 0;
+          streak = (isNaN(val) || val < 1 ? 0 : val) + 1;
+          localStorage.setItem("mochi_breathe_streak", String(streak));
+        } catch { }
+
+        setMilestoneData({
+          streak,
+          startBpm: startVal,
+          endBpm: endVal,
+          calmGain: Math.max(1, startVal - endVal),
+        });
+        setShowMilestone(true);
         return;
       }
 
@@ -156,14 +366,13 @@ export default function MochiPage() {
     return () => cancelAnimationFrame(animId);
   }, [breatheWithMe, viewMode, soundEnabled]);
 
-  // Step 6: Stop Camera handler
-  const handleStopCamera = useCallback(() => {
-    stopCamera();
-    setBreatheWithMe(false);
-    setCalmProgress(0);
-    setEntryState("just-play");
-    setSelectedMood("grin");
-  }, [stopCamera]);
+  // Start Camera Awakening
+  const handleStartAwakening = useCallback(() => {
+    setShowNewspaperCard(false);
+    setCameraEnabled(true);
+    setStoryStage("awakening");
+    setSelectedMood("dormant");
+  }, []);
 
   // Affirmation navigation handlers
   const handleNextAffirmation = useCallback(() => {
@@ -184,7 +393,25 @@ export default function MochiPage() {
     });
   }, []);
 
-  // Keyboard navigation for affirmations + expression shortcuts
+  const handleDownloadCard = async () => {
+    if (isDownloadingCard) return;
+    setIsDownloadingCard(true);
+    if (soundEnabled) sfx.playPop();
+    try {
+      const el = document.getElementById("mochi-character-card");
+      const currentAffirmation =
+        AFFIRMATIONS[affirmationIndex % AFFIRMATIONS.length];
+      await downloadQuoteCard(
+        el,
+        currentAffirmation,
+        `mochi-quote-${affirmationIndex + 1}.png`
+      );
+    } finally {
+      setIsDownloadingCard(false);
+    }
+  };
+
+  // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -205,11 +432,13 @@ export default function MochiPage() {
         return;
       }
 
-      if (cameraEnabled && !breatheWithMe) {
+      if (storyStage === "alive" && cameraEnabled && !breatheWithMe) {
         if (e.key.toLowerCase() === "o") {
           setSelectedMood("surprised");
         } else if (e.key.toLowerCase() === "s") {
           setSelectedMood("grin");
+        } else if (e.key.toLowerCase() === "w") {
+          setShowMirrorPreview((v) => !v);
         }
       }
     };
@@ -218,38 +447,42 @@ export default function MochiPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
     viewMode,
+    storyStage,
     cameraEnabled,
     breatheWithMe,
     handleNextAffirmation,
     handlePrevAffirmation,
   ]);
 
-  const moods: Array<{ id: CharacterMood; label: string }> = [
-    { id: "grin", label: "Happy" },
-    { id: "curious", label: "Curious" },
-    { id: "smug", label: "Smug" },
-    { id: "surprised", label: "Surprised" },
-    { id: "love", label: "In Love" },
-    { id: "sleepy", label: "Sleepy" },
-    { id: "dizzy", label: "Dizzy" },
-  ];
-
   const currentAffirmation = AFFIRMATIONS[affirmationIndex];
-  const activeBreathPhase = breatheWithMe
-    ? pacedBreathPhase
-    : cameraEnabled
-    ? snapshot.breathPhase
-    : 0;
-
-  const breathSparkline = buildSparklinePoints(snapshot.breathTrace, 120, 26);
-  const pulseSparkline = buildSparklinePoints(snapshot.pulseTrace, 120, 26);
+  const activeBreathPhase =
+    storyStage !== "alive"
+      ? 0
+      : breatheWithMe
+        ? pacedBreathPhase
+        : cameraEnabled
+          ? snapshot.breathPhase
+          : 0;
 
   return (
     <div className="min-h-[100dvh] bg-background text-foreground flex flex-col justify-between overflow-hidden relative selection:bg-[#fef08a] selection:text-black">
+      {/* ─── Soft Warm Ambient Radial Glow (Inspired by Reference) ─── */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 flex items-center justify-center z-0 overflow-hidden"
+      >
+        <div
+          className="w-[420px] sm:w-[540px] h-[420px] sm:h-[540px] rounded-full blur-3xl opacity-80 transition-opacity duration-700"
+          style={{
+            background:
+              "radial-gradient(circle, rgba(253, 186, 116, 0.42) 0%, rgba(254, 205, 211, 0.34) 42%, rgba(255, 255, 255, 0) 72%)",
+          }}
+        />
+      </div>
+
       {/* ─── Minimalist Top Bar ────────────────────────────────────── */}
-      <header className="fixed top-0 inset-x-0 z-30 px-6 sm:px-10 py-4 flex items-center justify-between pointer-events-none">
-        {/* Brand Wordmark */}
-        <div className="pointer-events-auto flex items-center gap-3">
+      <header className="fixed top-0 inset-x-0 z-30 px-6 sm:px-10 py-5 flex items-center justify-between pointer-events-none">
+        <div className="pointer-events-auto flex items-center gap-4">
           <button
             type="button"
             onClick={() => {
@@ -262,114 +495,70 @@ export default function MochiPage() {
           </button>
         </div>
 
-        {/* Right Tools: Step 2 Camera Active Dot + Stop Button + Sound Toggle */}
-        <div className="pointer-events-auto flex items-center gap-2">
-          {cameraEnabled ? (
-            <div className="flex items-center gap-2 rounded-full border border-border bg-background/95 backdrop-blur-md pl-3 pr-1.5 py-1 shadow-xs">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-              </span>
-              <span className="text-xs font-medium text-foreground select-none">
-                Camera active
-              </span>
-
-              {/* Side-by-Side Mirror View Toggle */}
+        {/* Top-Right Expandable Download Card Button (Affirmation Mode Only) */}
+        <AnimatePresence>
+          {viewMode === "affirmation" && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.8, y: -6 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.8, y: -6 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
+              className="pointer-events-auto"
+            >
               <button
                 type="button"
-                onClick={() => setShowMirrorPreview((v) => !v)}
-                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors cursor-pointer ${
-                  showMirrorPreview
-                    ? "bg-foreground text-background"
-                    : "text-muted-foreground hover:text-foreground hover:bg-surface"
-                }`}
-                title="Toggle side-by-side camera mirror view"
+                onClick={handleDownloadCard}
+                disabled={isDownloadingCard}
+                aria-label="Download card"
+                className="group flex items-center h-10 sm:h-11 rounded-full bg-[#0a0a0a] hover:bg-[#1a1a1a] active:scale-[0.96] text-white shadow-[0_4px_14px_rgba(0,0,0,0.22)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.32)] transition-all duration-300 ease-out overflow-hidden px-3 cursor-pointer disabled:opacity-70"
               >
-                {showMirrorPreview ? "Hide webcam" : "Show webcam"}
+                <div className="flex items-center justify-center shrink-0 w-4 h-4">
+                  <svg
+                    className={`w-4 h-4 ${isDownloadingCard ? "animate-bounce" : ""}`}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                </div>
+                <span
+                  className={`overflow-hidden whitespace-nowrap text-xs sm:text-sm font-medium tracking-tight transition-all duration-300 ease-out ${
+                    isDownloadingCard
+                      ? "max-w-[130px] opacity-100 ml-2"
+                      : "max-w-0 opacity-0 group-hover:max-w-[130px] group-hover:opacity-100 group-hover:ml-2"
+                  }`}
+                >
+                  {isDownloadingCard ? "Saving card..." : "Download card"}
+                </span>
               </button>
-
-              <button
-                type="button"
-                onClick={handleStopCamera}
-                className="px-2.5 py-1 rounded-full text-xs font-medium bg-surface hover:bg-neutral-200/80 text-foreground border border-border transition-all active:scale-95 cursor-pointer"
-              >
-                Stop camera
-              </button>
-            </div>
-          ) : (
-            entryState === "just-play" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setShowMirrorPreview(true);
-                  setEntryState("camera");
-                }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border border-border bg-surface text-xs font-medium text-foreground hover:bg-neutral-200/80 transition-all active:scale-95 cursor-pointer"
-              >
-                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                <span>Turn on camera</span>
-              </button>
-            )
+            </motion.div>
           )}
-
-          <button
-            type="button"
-            onClick={() => setSoundEnabled((v) => !v)}
-            className="inline-flex items-center justify-center w-9 h-9 rounded-full border border-border bg-surface text-foreground hover:bg-neutral-200/80 transition-all active:scale-95 cursor-pointer"
-            title={soundEnabled ? "Mute audio effects" : "Enable audio effects"}
-          >
-            {soundEnabled ? (
-              <svg
-                className="w-4 h-4 text-foreground"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-              </svg>
-            ) : (
-              <svg
-                className="w-4 h-4 text-muted-foreground"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                <line x1="23" y1="9" x2="17" y2="15" />
-                <line x1="17" y1="9" x2="23" y2="15" />
-              </svg>
-            )}
-            <span className="sr-only">Toggle audio</span>
-          </button>
-        </div>
+        </AnimatePresence>
       </header>
 
       {/* ─── Main Interactive Canvas ──────────────────────────────── */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 pt-14 pb-20 relative w-full overflow-hidden max-w-full">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 pt-12 pb-16 relative z-10 w-full overflow-hidden max-w-full">
         <div
-          className={`flex flex-col ${
-            showMirrorPreview && cameraEnabled
-              ? "lg:flex-row items-center justify-center gap-6 lg:gap-12"
-              : "items-center justify-center"
-          } w-full max-w-5xl mx-auto`}
+          className={`flex flex-col ${showMirrorPreview && cameraEnabled
+            ? "lg:flex-row items-center justify-center gap-6 lg:gap-12"
+            : "items-center justify-center"
+            } w-full max-w-5xl mx-auto`}
         >
-          {/* Side-by-Side Webcam Feed so you & judges can see your breathing/face next to Mochi */}
+          {/* Optional Side-by-Side Webcam Feed (press 'W' to toggle) */}
           <AnimatePresence>
             {showMirrorPreview && cameraEnabled && (
               <motion.div
-                initial={{ opacity: 0, scale: 0.92, x: -12 }}
-                animate={{ opacity: 1, scale: 1, x: 0 }}
-                exit={{ opacity: 0, scale: 0.92, x: -12 }}
-                transition={{ duration: 0.25 }}
-                className="relative w-[220px] sm:w-[270px] aspect-[4/3] rounded-3xl overflow-hidden border border-border bg-surface shadow-sm shrink-0"
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+                transition={{ duration: 0.2 }}
+                className="relative w-[220px] sm:w-[260px] aspect-[4/3] rounded-none overflow-hidden border border-border bg-surface shrink-0"
               >
                 <video
                   ref={previewVideoElRef}
@@ -377,23 +566,12 @@ export default function MochiPage() {
                   muted
                   className="w-full h-full object-cover -scale-x-100"
                 />
-
-                {/* Overlay ROI & status tags on webcam preview */}
-                <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none">
-                  <span className="px-2 py-0.5 rounded-full bg-background/85 backdrop-blur-md border border-border text-[10px] font-mono text-foreground">
-                    SmartSpectra v{snapshot.sdkVersion}
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full bg-background/85 backdrop-blur-md border border-border text-[10px] font-mono text-muted-foreground">
-                    Zero-storage
-                  </span>
-                </div>
-
-                <div className="absolute bottom-2.5 left-2.5 right-2.5 flex items-center justify-between px-2.5 py-1 rounded-full bg-background/90 backdrop-blur-md border border-border text-[11px] font-mono text-foreground">
+                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between px-2.5 py-1 bg-background/90 border border-border text-[11px] font-mono text-foreground">
                   <span className="flex items-center gap-1">
                     <span
-                      className={`inline-block transition-transform duration-150 ${
-                        beatFlash ? "scale-125 text-rose-500" : "text-foreground"
-                      }`}
+                      className={
+                        beatFlash ? "text-rose-600" : "text-foreground"
+                      }
                     >
                       ♥
                     </span>
@@ -403,40 +581,175 @@ export default function MochiPage() {
                     {snapshot.breathState === "inhaling"
                       ? "↑ inhaling"
                       : snapshot.breathState === "exhaling"
-                      ? "↓ exhaling"
-                      : "• steady"}
+                        ? "↓ exhaling"
+                        : "• steady"}
                   </span>
                 </div>
               </motion.div>
             )}
           </AnimatePresence>
 
-          {/* Mochi Character + Guided Breathing Whisper */}
+          {/* Mochi Character + Minimal Status / Gift Letter */}
           <div className="flex flex-col items-center justify-center relative w-full max-w-[430px]">
             <ReactiveCharacter
-              mood={selectedMood}
-              onMoodChange={(m) => setSelectedMood(m)}
+              mood={storyStage === "alive" ? selectedMood : "dormant"}
+              onMoodChange={(m) => {
+                if (storyStage === "alive") {
+                  lastUserInteractionRef.current = performance.now();
+                  setTimeout(() => setSelectedMood(m), 0);
+                }
+              }}
               colorTheme="monochrome"
               soundEnabled={soundEnabled}
-              interactive={true}
+              interactive={storyStage === "alive"}
               waveIntensity={1.1}
               waveSpeed={1.0}
-              waveSurgeEnabled={true}
+              waveSurgeEnabled={storyStage === "alive"}
               viewMode={viewMode}
               onViewModeChange={(mode) => setViewMode(mode)}
               affirmationIndex={affirmationIndex}
               onAffirmationChange={(idx) => setAffirmationIndex(idx)}
-              cameraActive={cameraEnabled && isReady}
+              cameraActive={storyStage === "alive" && cameraEnabled && isReady}
+              awakeningProgress={
+                storyStage === "dormant"
+                  ? 0
+                  : storyStage === "awakening"
+                    ? awakeningProgress
+                    : 1
+              }
               breathPhase={activeBreathPhase}
               heartbeatCount={snapshot.heartbeatCount}
               heartbeatAngle={snapshot.heartbeatAngle}
-              cameraHeadX={snapshot.headX}
-              cameraHeadY={snapshot.headY}
+              cameraHeadX={storyStage === "alive" ? snapshot.headX : 0}
+              cameraHeadY={storyStage === "alive" ? snapshot.headY : 0}
               breatheWithMeActive={breatheWithMe}
               calmProgress={calmProgress}
+              breatheCoachMessage={breatheCoachMessage}
             />
 
-            {/* Step 4: Gentle Paced Breathing Prompt underneath Mochi */}
+            {/* ─── Seamless Minimal BPM + Red Vertical Bar Graph (Matching Reference) ─── */}
+            <AnimatePresence mode="wait">
+              {viewMode === "face" && cameraEnabled && !showNewspaperCard && (
+                <motion.div
+                  key="seamless-bpm-strip"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.25 }}
+                  className="mt-18 sm:mt-24 w-full max-w-[340px] flex flex-col items-center select-none z-20"
+                >
+                  {/* Main BPM + Feathered Red Bar Waveform Row */}
+                  <div className="w-full flex items-center justify-between gap-6 px-2">
+                    {/* Left: Bold BPM Readout */}
+                    <div className="flex items-baseline shrink-0">
+                      <span className="text-3xl sm:text-4xl font-semibold tracking-tight text-foreground tabular-nums">
+                        {snapshot.facePresent && snapshot.pulseBpm > 0
+                          ? breatheWithMe && baselineBpm
+                            ? Math.max(
+                              58,
+                              Math.round(baselineBpm - calmProgress * 7)
+                            )
+                            : snapshot.pulseBpm
+                          : "--"}
+                      </span>
+                      <span className="ml-1.5 text-base sm:text-lg font-normal text-foreground/80 tracking-normal">
+                        BPM
+                      </span>
+                    </div>
+
+                    {/* Right: Feathered Vertical Red Bars Waveform */}
+                    <div
+                      className="flex items-center justify-end gap-[3.5px] h-11 flex-1"
+                      aria-hidden="true"
+                    >
+                      {snapshot.pulseTrace.slice(-24).map((val, idx, arr) => {
+                        const normPos = idx / Math.max(1, arr.length - 1);
+                        const edgeTaper = Math.sin(normPos * Math.PI);
+                        const activeAmp = snapshot.facePresent
+                          ? Math.min(
+                            1,
+                            Math.abs(val) * 0.85 +
+                            0.22 +
+                            Math.sin(idx * 1.7) * 0.15
+                          )
+                          : 0.12;
+                        const totalHeightPx = Math.round(
+                          (6 + activeAmp * 32) * (0.35 + edgeTaper * 0.65)
+                        );
+                        const isSegmented =
+                          snapshot.facePresent &&
+                          idx % 5 === 2 &&
+                          totalHeightPx > 18;
+                        const barOpacity = snapshot.facePresent
+                          ? (0.28 + edgeTaper * 0.72).toFixed(2)
+                          : "0.22";
+
+                        return isSegmented ? (
+                          <div
+                            key={idx}
+                            className="flex flex-col items-center justify-center gap-[2px]"
+                            style={{
+                              height: `${totalHeightPx}px`,
+                              opacity: barOpacity,
+                            }}
+                          >
+                            <span
+                              className="w-[2.5px] flex-1 rounded-full transition-all duration-150"
+                              style={{
+                                background:
+                                  "linear-gradient(180deg, rgba(220,38,38,0.18) 0%, rgba(220,38,38,0.92) 70%, rgba(220,38,38,0.45) 100%)",
+                              }}
+                            />
+                            <span
+                              className="w-[2.5px] flex-1 rounded-full transition-all duration-150"
+                              style={{
+                                background:
+                                  "linear-gradient(180deg, rgba(220,38,38,0.45) 0%, rgba(220,38,38,0.92) 30%, rgba(220,38,38,0.18) 100%)",
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <span
+                            key={idx}
+                            className="w-[2.5px] rounded-full transition-all duration-150"
+                            style={{
+                              height: `${totalHeightPx}px`,
+                              opacity: barOpacity,
+                              background:
+                                "linear-gradient(180deg, rgba(220,38,38,0.12) 0%, rgba(220,38,38,0.95) 50%, rgba(220,38,38,0.12) 100%)",
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Feature #1: Subtle 1-Line State Check-In */}
+                  <div className="mt-1.5 text-center">
+                    {!snapshot.facePresent ? (
+                      <p className="text-[11px] text-rose-600/90 font-medium">
+                        Step in front of the camera so Mochi can feel your pulse
+                      </p>
+                    ) : storyStage === "awakening" ? (
+                      <p className="text-[11px] text-muted-foreground">
+                        Waking Mochi with your pulse ·{" "}
+                        {Math.round(awakeningProgress * 100)}%
+                      </p>
+                    ) : breatheWithMe ? null : (
+                      <p className="text-[11px] text-muted-foreground">
+                        {snapshot.pulseBpm >= 76
+                          ? `A little rushed (${snapshot.breathingRateBpm} br/min) · ready for your daily stillness`
+                          : snapshot.pulseBpm <= 68
+                            ? `Calm & still · ${snapshot.breathingRateBpm} br/min`
+                            : `Steady rhythm · ${snapshot.breathingRateBpm} br/min · tap to pause`}
+                      </p>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Gentle Paced Breathing Prompt underneath Mochi */}
             <AnimatePresence mode="wait">
               {breatheWithMe && viewMode === "face" && (
                 <motion.div
@@ -445,396 +758,137 @@ export default function MochiPage() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.35 }}
-                  className="mt-1 flex flex-col items-center gap-1 select-none pointer-events-none"
+                  className="mt-2 flex flex-col items-center gap-1 select-none pointer-events-none"
                 >
-                  <span className="font-caveat text-2xl sm:text-3xl font-bold text-foreground tracking-wide">
+                  <span
+                    className="font-caveat text-2xl sm:text-3xl font-bold text-foreground tracking-wide"
+                    style={{ fontFamily: "var(--font-caveat), cursive" }}
+                  >
                     {pacedBreathLabel}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    follow Mochi&apos;s rhythm · calm reward{" "}
-                    {Math.round(calmProgress * 100)}%
                   </span>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {/* Step 1: Friendly Onboarding Prompt */}
+            {/* ─── "Breathe with me" Action Button ───────────────────── */}
             <AnimatePresence>
-              {entryState === "prompt" && (
+              {storyStage === "alive" &&
+                cameraEnabled &&
+                viewMode === "face" &&
+                !breatheWithMe && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 6 }}
+                    transition={{ duration: 0.25 }}
+                    className="mt-5 z-20"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setBreatheWithMe(true)}
+                      className="flex items-center gap-2.5 px-7 py-3 rounded-full text-sm font-medium tracking-tight shadow-[0_14px_28px_-6px_rgba(0,0,0,0.32)] hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer bg-[#0a0a0a] hover:bg-[#171717] text-white"
+                    >
+                      <span>Breathe with me</span>
+                    </button>
+                  </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* ─── Initial Load Onboarding (Warm Typography + Looped Arrow + Pill CTA) ─── */}
+            <AnimatePresence>
+              {showNewspaperCard && (
                 <motion.div
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                  transition={{ duration: 0.25 }}
-                  className="mt-3 max-w-[380px] w-full rounded-2xl border border-border bg-background/95 backdrop-blur-md p-4 sm:p-5 text-center shadow-sm"
+                  exit={{ opacity: 0, y: 8 }}
+                  transition={{ duration: 0.3, ease: "easeOut" }}
+                  className="mt-2 flex flex-col items-center select-none z-20"
                 >
-                  <p className="text-sm leading-relaxed text-foreground">
-                    Mochi can breathe and feel with you using your camera.{" "}
-                    <span className="text-muted-foreground">
-                      Nothing is recorded. Want to turn it on?
-                    </span>
-                  </p>
-                  <div className="mt-4 flex items-center justify-center gap-2.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMirrorPreview(true);
-                        setEntryState("camera");
-                      }}
-                      className="px-4 py-2 rounded-full text-xs font-semibold bg-foreground text-background hover:opacity-90 transition-all active:scale-95 cursor-pointer"
-                    >
-                      Turn on camera
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEntryState("just-play")}
-                      className="px-4 py-2 rounded-full text-xs font-medium bg-surface text-foreground border border-border hover:bg-neutral-200/80 transition-all active:scale-95 cursor-pointer"
-                    >
-                      Just play
-                    </button>
+                  {/* Warm Crimson Headline Copy (Matches Reference Typography) */}
+                  <div className="text-left max-w-[260px] sm:max-w-[280px]">
+                    <p className="text-[19px] sm:text-[22px] font-semibold leading-[1.28] tracking-tight text-[#7f1d1d]">
+                      A daily pause for stillness.
+                      <br />
+                      Turn on camera to begin!
+                    </p>
                   </div>
+
+                  {/* Hand-Drawn Looped Arrow Pointing Down to CTA */}
+                  <div className="my-2 sm:my-3 pointer-events-none">
+                    <svg
+                      width="110"
+                      height="96"
+                      viewBox="0 0 110 96"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="overflow-visible"
+                    >
+                      <defs>
+                        <linearGradient
+                          id="arrow-warm-grad"
+                          x1="0%"
+                          y1="0%"
+                          x2="0%"
+                          y2="100%"
+                        >
+                          <stop offset="0%" stopColor="#9a5812" />
+                          <stop offset="100%" stopColor="#8a8178" />
+                        </linearGradient>
+                      </defs>
+                      <motion.path
+                        initial={{ pathLength: 0, opacity: 0 }}
+                        animate={{ pathLength: 1, opacity: 1 }}
+                        transition={{ duration: 0.85, ease: "easeInOut", delay: 0.15 }}
+                        d="M 88 18 C 52 24, 18 22, 22 9 C 25 -2, 48 6, 54 34 C 58 54, 60 72, 61 88"
+                        stroke="url(#arrow-warm-grad)"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                      <motion.path
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ duration: 0.25, delay: 0.85 }}
+                        d="M 46 73 L 61 90 L 75 72"
+                        stroke="#8a8178"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </div>
+
+                  {/* Sleek Floating Black Pill CTA Button */}
+                  <button
+                    type="button"
+                    onClick={handleStartAwakening}
+                    className="min-w-[230px] sm:min-w-[250px] px-9 py-3.5 rounded-full bg-[#0a0a0a] hover:bg-[#171717] text-white text-sm font-medium tracking-tight shadow-[0_14px_28px_-6px_rgba(0,0,0,0.32)] transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                  >
+                    Turn on camera
+                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
         </div>
-
-        {/* ─── Live SmartSpectra Biometric Telemetry Readout ──────── */}
-        <AnimatePresence>
-          {cameraEnabled && viewMode === "face" && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 10 }}
-              transition={{ duration: 0.25 }}
-              className="mt-3 w-full max-w-2xl rounded-2xl border border-border bg-background/95 backdrop-blur-md p-3 sm:p-3.5 shadow-xs"
-            >
-              {error ? (
-                <p className="text-xs text-rose-600 text-center">{error}</p>
-              ) : (
-                <>
-                  {/* Telemetry Header */}
-                  <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-border text-[11px] font-mono text-muted-foreground">
-                    <div className="flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      <span className="font-semibold text-foreground">
-                        SMARTSPECTRA BIOMETRIC FEED
-                      </span>
-                      <span className="hidden sm:inline">
-                        ({snapshot.cameraName})
-                      </span>
-                    </div>
-                    <span>
-                      {breatheWithMe
-                        ? `Guided Co-Regulation · ${Math.round(
-                            calmProgress * 100
-                          )}% to card reward`
-                        : "Live Body Mirroring · Nothing saved"}
-                    </span>
-                  </div>
-
-                  {/* 3-Column Live Signals: Breathing | Heartbeat | Expression */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                    {/* 1. Breathing Signal */}
-                    <div className="rounded-xl bg-surface/70 border border-border/80 px-3 py-2 flex flex-col justify-between">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-                          1. Breathing
-                        </span>
-                        <span className="text-[11px] font-mono font-semibold text-foreground">
-                          {snapshot.breathingRateBpm} br/min
-                        </span>
-                      </div>
-
-                      <div className="my-1.5 flex items-center justify-between gap-2">
-                        <span
-                          className={`text-xs font-semibold ${
-                            activeBreathPhase > 0.14
-                              ? "text-emerald-600"
-                              : activeBreathPhase < -0.14
-                              ? "text-sky-600"
-                              : "text-foreground"
-                          }`}
-                        >
-                          {activeBreathPhase > 0.14
-                            ? "↑ Inhaling"
-                            : activeBreathPhase < -0.14
-                            ? "↓ Exhaling"
-                            : "• Steady"}
-                        </span>
-
-                        {/* Live Breathing Sparkline */}
-                        <svg
-                          width="96"
-                          height="22"
-                          viewBox="0 0 120 26"
-                          className="overflow-visible shrink-0"
-                        >
-                          <line
-                            x1="0"
-                            y1="13"
-                            x2="120"
-                            y2="13"
-                            stroke="currentColor"
-                            strokeOpacity="0.15"
-                            strokeDasharray="2 2"
-                          />
-                          <polyline
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            points={breathSparkline}
-                          />
-                        </svg>
-                      </div>
-
-                      <div className="text-[10px] text-muted-foreground flex items-center justify-between">
-                        <span>
-                          {activeBreathPhase > 0.14
-                            ? "Mochi swells with you"
-                            : activeBreathPhase < -0.14
-                            ? "Mochi shrinks with you"
-                            : "Inhale/exhale to swell"}
-                        </span>
-                        <span className="font-mono">
-                          {activeBreathPhase >= 0 ? "+" : ""}
-                          {Math.round(activeBreathPhase * 100)}%
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* 2. Heartbeat Signal */}
-                    <div className="rounded-xl bg-surface/70 border border-border/80 px-3 py-2 flex flex-col justify-between">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-                          2. Heartbeat
-                        </span>
-                        <span className="text-[11px] font-mono font-semibold text-foreground">
-                          {snapshot.pulseBpm} BPM
-                        </span>
-                      </div>
-
-                      <div className="my-1.5 flex items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                          <span
-                            className={`inline-block transition-transform duration-150 ${
-                              beatFlash
-                                ? "scale-125 text-rose-500"
-                                : "text-muted-foreground"
-                            }`}
-                          >
-                            ♥
-                          </span>
-                          <span>{beatFlash ? "Pulse peak!" : "Tracking"}</span>
-                        </span>
-
-                        {/* Live rPPG Pulse Sparkline */}
-                        <svg
-                          width="96"
-                          height="22"
-                          viewBox="0 0 120 26"
-                          className="overflow-visible shrink-0"
-                        >
-                          <polyline
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            points={pulseSparkline}
-                          />
-                        </svg>
-                      </div>
-
-                      <div className="text-[10px] text-muted-foreground flex items-center justify-between">
-                        <span>Ripples Mochi&apos;s edge</span>
-                        <span className="font-mono">
-                          #{snapshot.heartbeatCount}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* 3. Facial Expression & Gaze Signal */}
-                    <div className="rounded-xl bg-surface/70 border border-border/80 px-3 py-2 flex flex-col justify-between">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-                          3. Expression
-                        </span>
-                        <span className="text-[11px] font-mono text-muted-foreground">
-                          Face + Gaze
-                        </span>
-                      </div>
-
-                      <div className="my-1.5 flex items-center justify-between">
-                        <span className="text-xs font-semibold text-foreground">
-                          {snapshot.expression === "grin"
-                            ? "😊 Smiling"
-                            : snapshot.expression === "surprised"
-                            ? "😮 Surprised"
-                            : "😌 Calm / Neutral"}
-                        </span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-background border border-border text-foreground">
-                          → {selectedMood}
-                        </span>
-                      </div>
-
-                      <div className="text-[10px] text-muted-foreground flex items-center justify-between">
-                        <span>Smile or open mouth wide</span>
-                        <span className="font-mono">Mirrored</span>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
       </main>
 
-      {/* ─── Bottom Navigation Dock ───────────────────────────────── */}
-      <footer className="fixed bottom-4 sm:bottom-5 inset-x-0 z-30 flex flex-col items-center justify-center px-2 sm:px-4 pointer-events-none">
-        <AnimatePresence mode="wait">
-          {viewMode === "affirmation" ? (
-            /* ─── Affirmation Carousel Controller Dock ─────────────── */
-            <motion.div
-              key="affirmation-dock"
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 14 }}
-              transition={{ duration: 0.2 }}
-              className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 p-1 sm:p-1.5 rounded-full bg-background/95 backdrop-blur-md border border-border shadow-lg max-w-[calc(100vw-24px)] shrink-0"
-            >
-              <button
-                type="button"
-                onClick={handlePrevAffirmation}
-                className="inline-flex items-center gap-1 px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-full text-xs font-medium text-foreground hover:bg-surface border border-transparent hover:border-border transition-all active:scale-95 cursor-pointer"
-                title="Previous affirmation (←)"
-              >
-                <svg
-                  className="w-3.5 h-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="15 18 9 12 15 6" />
-                </svg>
-                <span className="hidden sm:inline">Prev</span>
-              </button>
-
-              <div className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 text-xs font-mono select-none">
-                <span className="font-bold text-foreground">
-                  {String(affirmationIndex + 1).padStart(2, "0")}
-                </span>
-                <span className="text-muted-foreground">/</span>
-                <span className="text-muted-foreground">
-                  {String(AFFIRMATIONS.length).padStart(2, "0")}
-                </span>
-                {currentAffirmation.badge && (
-                  <span className="hidden sm:inline-block text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface border border-border text-muted-foreground">
-                    {currentAffirmation.badge}
-                  </span>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={handleNextAffirmation}
-                className="inline-flex items-center gap-1 px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-xs font-semibold bg-foreground text-background hover:opacity-90 shadow-xs transition-all active:scale-95 cursor-pointer"
-                title="Next affirmation (→ / Space / Click card)"
-              >
-                <span>Next</span>
-                <svg
-                  className="w-3.5 h-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="9 18 15 12 9 6" />
-                </svg>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleShuffleAffirmation}
-                className="inline-flex items-center justify-center w-7 h-7 sm:w-8 sm:h-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-surface transition-all active:scale-90 cursor-pointer"
-                title="Random affirmation"
-              >
-                <svg
-                  className="w-3.5 h-3.5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <polyline points="16 3 21 3 21 8" />
-                  <line x1="4" y1="20" x2="21" y2="3" />
-                  <polyline points="21 16 21 21 16 21" />
-                  <line x1="15" y1="15" x2="21" y2="21" />
-                  <line x1="4" y1="4" x2="9" y2="9" />
-                </svg>
-              </button>
-            </motion.div>
-          ) : (
-            /* ─── Character Mood Selector + "Breathe with me" Dock ─── */
-            <motion.div
-              key="mood-dock"
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 14 }}
-              transition={{ duration: 0.2 }}
-              className="pointer-events-auto flex items-center gap-1.5 p-1 sm:p-1.5 rounded-full bg-background/95 backdrop-blur-md border border-border shadow-lg max-w-[calc(100vw-24px)] overflow-x-auto no-scrollbar scroll-smooth"
-            >
-              {/* Step 4: "Breathe with me" Button */}
-              {cameraEnabled && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setBreatheWithMe((v) => !v)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all shrink-0 active:scale-95 cursor-pointer flex items-center gap-1.5 ${
-                      breatheWithMe
-                        ? "bg-rose-600 text-white shadow-xs"
-                        : "bg-foreground text-background hover:opacity-90"
-                    }`}
-                  >
-                    <span>
-                      {breatheWithMe ? "Breathing together..." : "Breathe with me"}
-                    </span>
-                  </button>
-                  <span className="h-4 w-[1px] bg-border mx-0.5 shrink-0" />
-                </>
-              )}
-
-              {moods.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => {
-                    setBreatheWithMe(false);
-                    setSelectedMood(m.id);
-                  }}
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all shrink-0 active:scale-95 cursor-pointer ${
-                    selectedMood === m.id && !breatheWithMe
-                      ? "bg-foreground text-background shadow-xs font-semibold"
-                      : "text-muted-foreground hover:text-foreground hover:bg-surface"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </footer>
+      {/* ─── Milestone Celebration Screen (Duolingo Flaming Comet Style) ─── */}
+      <AnimatePresence>
+        {showMilestone && milestoneData && (
+          <MilestoneCelebration
+            streak={milestoneData.streak}
+            startBpm={milestoneData.startBpm}
+            endBpm={milestoneData.endBpm}
+            calmGain={milestoneData.calmGain}
+            soundEnabled={soundEnabled}
+            onContinue={() => {
+              setShowMilestone(false);
+              setSelectedMood("calm");
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
