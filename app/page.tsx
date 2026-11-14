@@ -670,7 +670,7 @@ export default function MochiPage() {
               onViewModeChange={(mode) => setViewMode(mode)}
               affirmationIndex={affirmationIndex}
               onAffirmationChange={(idx) => setAffirmationIndex(idx)}
-              cameraActive={storyStage === "alive" && cameraEnabled && isReady}
+              cameraActive={cameraEnabled && isReady}
               awakeningProgress={
                 storyStage === "dormant"
                   ? 0
@@ -681,8 +681,8 @@ export default function MochiPage() {
               breathPhase={activeBreathPhase}
               heartbeatCount={snapshot.heartbeatCount}
               heartbeatAngle={snapshot.heartbeatAngle}
-              cameraHeadX={storyStage === "alive" ? snapshot.headX : 0}
-              cameraHeadY={storyStage === "alive" ? snapshot.headY : 0}
+              cameraHeadX={cameraEnabled && isReady ? snapshot.headX : 0}
+              cameraHeadY={cameraEnabled && isReady ? snapshot.headY : 0}
               breatheWithMeActive={breatheWithMe}
               calmProgress={calmProgress}
               breatheCoachMessage={

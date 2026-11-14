@@ -543,13 +543,13 @@ export function ReactiveCharacter({
       return;
     }
     // Gaze follows user's face position
-    mouseX.set(cameraHeadX * 26);
-    mouseY.set(cameraHeadY * 18);
+    mouseX.set(cameraHeadX * 36);
+    mouseY.set(cameraHeadY * 24);
     // Head tilts gently in direction of gaze
-    headTilt.set(cameraHeadX * 7);
+    headTilt.set(cameraHeadX * 10);
     // Whole squircle body leans and floats toward user's face
-    bodyX.set(cameraHeadX * 18);
-    bodyY.set(cameraHeadY * 12);
+    bodyX.set(cameraHeadX * 32);
+    bodyY.set(cameraHeadY * 20);
   }, [
     cameraActive,
     cameraHeadX,
@@ -652,6 +652,13 @@ export function ReactiveCharacter({
       }
 
       const effectivePetting = isPetting || isCoRegulatingPurr;
+      const effectiveDragOffset =
+        cameraActive && !isCardMode
+          ? {
+              x: dragOffset.x + bodyX.get() * 1.35,
+              y: dragOffset.y + bodyY.get() * 1.35,
+            }
+          : dragOffset;
 
       const outerPathData = generateWavySquirclePath({
         time: elapsed,
@@ -666,7 +673,7 @@ export function ReactiveCharacter({
         pokeRipple,
         heartbeatRipple,
         breathDisplacement: currentBreathDispRef.current,
-        dragOffset,
+        dragOffset: effectiveDragOffset,
         mood: currentMood,
         isPetting: effectivePetting,
         isAffirmation: isCardMode,
@@ -685,7 +692,7 @@ export function ReactiveCharacter({
         pokeRipple,
         heartbeatRipple,
         breathDisplacement: currentBreathDispRef.current * 0.94,
-        dragOffset,
+        dragOffset: effectiveDragOffset,
         mood: currentMood,
         isPetting: effectivePetting,
         isAffirmation: isCardMode,

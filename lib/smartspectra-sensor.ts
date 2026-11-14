@@ -293,161 +293,103 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             const currentLuma = new Float32Array(W * H);
 
-            // --- 1. Strict Human Face Verification (YCbCr Skin + Eye/Mouth Contrast + Bounding Shape) ---
-            let skinSumX = 0;
-            let skinSumY = 0;
-            let skinCountCenter = 0;
-            let centerTotal = 0;
-            let skinCountOuter = 0;
-            let outerTotal = 0;
+            // --- 1. Spatial Grid Face Box Locator (Skin + Facial Feature Contrast + Motion) ---
+            const GW = 32; // 128 / 4
+            const GH = 24; // 96 / 4
+            const skinGrid = new Float32Array(GW * GH);
+            const featGrid = new Float32Array(GW * GH);
+            const motGrid = new Float32Array(GW * GH);
 
-            // Full-frame skin tracking for wide-angle face following
-            let allSkinSumX = 0;
-            let allSkinSumY = 0;
             let allSkinCount = 0;
+            let totalFeatContrast = 0;
+            let frameDiffSum = 0;
+            const prevLuma = prevFrameLumaRef.current;
 
-            let greenSum = 0;
-            let lumaSum = 0;
-            let roiPixels = 0;
+            // First pass: compute luminance
+            for (let i = 0; i < W * H; i++) {
+              const idx = i * 4;
+              currentLuma[i] =
+                0.299 * frame[idx] +
+                0.587 * frame[idx + 1] +
+                0.114 * frame[idx + 2];
+            }
 
-            for (let y = 0; y < H; y++) {
-              for (let x = 0; x < W; x++) {
-                const idx = (y * W + x) * 4;
+            // Second pass: populate 32x24 spatial cells with skin, facial feature edges, and motion
+            for (let y = 3; y < H - 3; y++) {
+              const gy = y >> 2;
+              for (let x = 3; x < W - 3; x++) {
+                const gx = x >> 2;
+                const cellIdx = gy * GW + gx;
+                const pIdx = y * W + x;
+                const idx = pIdx * 4;
+
                 const r = frame[idx];
                 const g = frame[idx + 1];
                 const b = frame[idx + 2];
-                const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-                currentLuma[y * W + x] = luma;
+                const luma = currentLuma[pIdx];
 
-                // YCbCr chrominance human skin test (rejects white/grey walls, dark rooms, wood, etc.)
+                // Inclusive skin chrominance test across Fitzpatrick I-VI
                 const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
                 const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
 
                 const isHumanSkin =
-                  luma > 35 &&
-                  luma < 235 &&
-                  r > 55 &&
-                  g > 35 &&
-                  b > 20 &&
-                  r > g &&
-                  r > b + 10 &&
-                  cb >= 77 &&
-                  cb <= 127 &&
-                  cr >= 133 &&
-                  cr <= 173;
+                  luma > 20 &&
+                  luma < 248 &&
+                  r > 38 &&
+                  g > 25 &&
+                  b > 15 &&
+                  r >= g - 4 &&
+                  r >= b - 2 &&
+                  (r - b > 6 || cr >= 126) &&
+                  cb >= 68 &&
+                  cb <= 138 &&
+                  cr >= 126 &&
+                  cr <= 184;
 
-                if (isHumanSkin && y < H * 0.85) {
-                  allSkinSumX += x;
-                  allSkinSumY += y;
-                  allSkinCount++;
+                if (isHumanSkin) {
+                  skinGrid[cellIdx] += 1;
+                  if (y < H * 0.85) allSkinCount++;
                 }
 
-                const inCenterBox = x >= 26 && x <= 102 && y >= 10 && y <= 76;
-                if (inCenterBox) {
-                  centerTotal++;
-                  if (isHumanSkin) {
-                    skinCountCenter++;
-                    skinSumX += x;
-                    skinSumY += y;
+                // Internal facial feature edges (eyes, brows, nostrils, mouth)
+                const vGrad = Math.abs(luma - currentLuma[(y - 2) * W + x]);
+                const hGrad = Math.abs(luma - currentLuma[y * W + (x - 2)]);
+                const edgeVal = vGrad * 0.7 + hGrad * 0.3;
+                if (edgeVal > 4.5) {
+                  featGrid[cellIdx] += edgeVal;
+                  totalFeatContrast += edgeVal;
+                }
+
+                // Temporal motion
+                if (prevLuma) {
+                  const mDiff = Math.abs(luma - prevLuma[pIdx]);
+                  frameDiffSum += mDiff;
+                  if (mDiff > 3.2) {
+                    motGrid[cellIdx] += mDiff;
                   }
-                } else if (x < 14 || x > W - 14 || y < 8) {
-                  outerTotal++;
-                  if (isHumanSkin) {
-                    skinCountOuter++;
-                  }
-                }
-
-                if (x >= 40 && x <= 88 && y >= 18 && y <= 62) {
-                  greenSum += g;
-                  lumaSum += luma;
-                  roiPixels++;
                 }
               }
             }
 
-            const centerSkinRatio =
-              centerTotal > 0 ? skinCountCenter / centerTotal : 0;
-            const outerSkinRatio =
-              outerTotal > 0 ? skinCountOuter / outerTotal : 0;
-
-            const faceCenterX =
-              skinCountCenter > 40 ? skinSumX / skinCountCenter : W / 2;
-            const faceCenterY =
-              skinCountCenter > 40 ? skinSumY / skinCountCenter : H * 0.42;
-
-            // Check internal facial feature contrast (eyes/brows/nose/mouth vs flat wall/hand)
-            const fLeft = Math.max(16, Math.round(faceCenterX - 24));
-            const fRight = Math.min(W - 16, Math.round(faceCenterX + 24));
-            const fTop = Math.max(10, Math.round(faceCenterY - 20));
-            const fBottom = Math.min(H - 12, Math.round(faceCenterY + 22));
-
-            let featureEdgeSum = 0;
-            let featureDarkSpots = 0; // eyes, eyebrows, nostrils, mouth corners
-            let featurePixels = 0;
-            const avgFaceLuma = roiPixels > 0 ? lumaSum / roiPixels : 128;
-
-            for (let y = fTop; y < fBottom; y++) {
-              for (let x = fLeft; x < fRight; x++) {
-                const l = currentLuma[y * W + x];
-                const lAbove = currentLuma[(y - 2) * W + x];
-                const lLeft = currentLuma[y * W + (x - 2)];
-                featureEdgeSum +=
-                  Math.abs(l - lAbove) * 0.7 + Math.abs(l - lLeft) * 0.3;
-                if (l < avgFaceLuma * 0.72) {
-                  featureDarkSpots++;
-                }
-                featurePixels++;
-              }
-            }
-
-            const avgFeatureContrast =
-              featurePixels > 0 ? featureEdgeSum / featurePixels : 0;
-            const darkFeatureRatio =
-              featurePixels > 0 ? featureDarkSpots / featurePixels : 0;
-
-            // Frame-to-frame motion check (rejects completely frozen frame or wild camera pan)
-            let frameDiffSum = 0;
-            if (prevFrameLumaRef.current) {
-              for (let i = 0; i < currentLuma.length; i += 4) {
-                frameDiffSum += Math.abs(
-                  currentLuma[i] - prevFrameLumaRef.current[i]
-                );
-              }
-            }
             prevFrameLumaRef.current = currentLuma;
-            const avgFrameMotion = frameDiffSum / (currentLuma.length / 4);
+            const avgFrameMotion = frameDiffSum / (W * H);
 
-            //Heuristic face verdict:
-            // 1. Sufficient human skin in center (at least 18%)
-            // 2. Not a uniform beige wall covering the entire outer border with low contrast
-            // 3. Real facial feature contrast (eyes/brows/mouth: avgFeatureContrast >= 4.2 and darkFeatureRatio between 3% and 42%)
-            // 4. Camera isn't being wildly swung around (avgFrameMotion < 28)
-            const heuristicFaceDetected =
-              centerSkinRatio >= 0.18 &&
-              (centerSkinRatio > outerSkinRatio * 1.25 ||
-                avgFeatureContrast > 7.5) &&
-              avgFeatureContrast >= 4.2 &&
-              darkFeatureRatio >= 0.025 &&
-              darkFeatureRatio <= 0.45 &&
-              avgFaceLuma > 32 &&
-              avgFaceLuma < 238 &&
-              avgFrameMotion < 28;
-
+            // Determine if a human face is present
             const rawFaceDetected =
-              nativeFaceResult !== null
-                ? nativeFaceResult && centerSkinRatio >= 0.1
-                : heuristicFaceDetected;
+              nativeFaceResult === true ||
+              (allSkinCount >= 20 &&
+                totalFeatContrast > 450 &&
+                avgFrameMotion < 42);
 
-            // Smooth confidence over ~6 frames so a single frame blink doesn't flicker
             faceConfidenceRef.current =
-              faceConfidenceRef.current * 0.75 + (rawFaceDetected ? 0.25 : 0);
-            const facePresent = faceConfidenceRef.current >= 0.45;
+              faceConfidenceRef.current * 0.7 + (rawFaceDetected ? 0.3 : 0);
+            const facePresent = faceConfidenceRef.current >= 0.35;
 
             if (!facePresent) {
               // No face in view -> decay head gaze, stop heartbeats, and decay breathing
-              smoothedHeadXRef.current *= 0.85;
-              smoothedHeadYRef.current *= 0.85;
-              smoothedBreathRef.current *= 0.85;
+              smoothedHeadXRef.current *= 0.82;
+              smoothedHeadYRef.current *= 0.82;
+              smoothedBreathRef.current *= 0.82;
               setSnapshot((prev) => ({
                 ...prev,
                 facePresent: false,
@@ -472,35 +414,132 @@ export function useSmartSpectraCamera(enabled: boolean) {
               return;
             }
 
-            // Wide-Angle Face Centroid Calculation (hardware-accelerated FaceDetector or full-field skin tracking)
-            let targetFaceCenterX = faceCenterX;
-            let targetFaceCenterY = faceCenterY;
+            // Locate the 8x9 cell (32x36px) Face Bounding Window that maximizes (skin * featureContrast * motion)
+            // This locks onto the actual moving head and ignores static background walls/furniture.
+            let faceCenterX = W / 2;
+            let faceCenterY = H * 0.42;
 
             if (nativeFaceBox && video.videoWidth > 0 && video.videoHeight > 0) {
-              targetFaceCenterX =
+              faceCenterX =
                 ((nativeFaceBox.x + nativeFaceBox.width / 2) / video.videoWidth) * W;
-              targetFaceCenterY =
+              faceCenterY =
                 ((nativeFaceBox.y + nativeFaceBox.height / 2) / video.videoHeight) * H;
-            } else if (allSkinCount > 25) {
-              targetFaceCenterX = allSkinSumX / allSkinCount;
-              targetFaceCenterY = allSkinSumY / allSkinCount;
+            } else {
+              let bestScore = -1;
+              let bestGx = GW / 2;
+              let bestGy = GH * 0.42;
+
+              // Previous tracked cell in grid coordinates for smooth spatial continuity
+              const prevGx = (W / 2 - smoothedHeadXRef.current * (W * 0.22)) / 4;
+              const prevGy = (H * 0.42 + smoothedHeadYRef.current * (H * 0.2)) / 4;
+
+              for (let gy = 4; gy <= GH - 6; gy++) {
+                for (let gx = 3; gx <= GW - 4; gx++) {
+                  let winSkin = 0;
+                  let winFeat = 0;
+                  let winMot = 0;
+
+                  for (let dy = -4; dy <= 4; dy++) {
+                    const rowOffset = (gy + dy) * GW;
+                    for (let dx = -3; dx <= 3; dx++) {
+                      const cIdx = rowOffset + (gx + dx);
+                      winSkin += skinGrid[cIdx];
+                      winFeat += featGrid[cIdx];
+                      winMot += motGrid[cIdx];
+                    }
+                  }
+
+                  // Require real facial feature edges inside the candidate head box (rejects flat walls)
+                  if (winFeat < 120) continue;
+
+                  const distFromPrev = Math.hypot(gx - prevGx, gy - prevGy);
+                  const continuityBonus = Math.max(0.65, 1.15 - distFromPrev * 0.03);
+                  const score =
+                    (winSkin + 24) *
+                    winFeat *
+                    (1 + Math.min(3.5, winMot / 140)) *
+                    continuityBonus;
+
+                  if (score > bestScore) {
+                    bestScore = score;
+                    bestGx = gx;
+                    bestGy = gy;
+                  }
+                }
+              }
+
+              // Refine sub-grid centroid inside the winning 40x44px face region
+              const boxX0 = Math.max(4, Math.round(bestGx * 4 - 20));
+              const boxX1 = Math.min(W - 4, Math.round(bestGx * 4 + 20));
+              const boxY0 = Math.max(4, Math.round(bestGy * 4 - 22));
+              const boxY1 = Math.min(H - 6, Math.round(bestGy * 4 + 22));
+
+              let weightedX = 0;
+              let weightedY = 0;
+              let totalWeight = 0;
+
+              for (let y = boxY0; y < boxY1; y++) {
+                const gy = y >> 2;
+                for (let x = boxX0; x < boxX1; x++) {
+                  const gx = x >> 2;
+                  const cIdx = gy * GW + gx;
+                  const w =
+                    skinGrid[cIdx] * 1.5 +
+                    featGrid[cIdx] * 0.12 +
+                    motGrid[cIdx] * 0.25;
+                  if (w > 0) {
+                    weightedX += x * w;
+                    weightedY += y * w;
+                    totalWeight += w;
+                  }
+                }
+              }
+
+              if (totalWeight > 0) {
+                faceCenterX = weightedX / totalWeight;
+                faceCenterY = weightedY / totalWeight;
+              } else {
+                faceCenterX = bestGx * 4;
+                faceCenterY = bestGy * 4;
+              }
             }
 
+            // Head offset:
+            // Moving head to right of user (left in raw webcam) -> positive headX
+            // Moving head to left of user (right in raw webcam) -> negative headX
             const rawHeadX = Math.max(
               -1,
-              Math.min(1, -((targetFaceCenterX - W / 2) / (W * 0.28)))
+              Math.min(1, -((faceCenterX - W / 2) / (W * 0.21)))
             );
             const rawHeadY = Math.max(
               -1,
-              Math.min(1, (targetFaceCenterY - H * 0.42) / (H * 0.25))
+              Math.min(1, (faceCenterY - H * 0.42) / (H * 0.19))
             );
 
-            // Smooth EMA for natural gaze and lean
+            // Responsive EMA for natural gaze and lean
             smoothedHeadXRef.current =
-              smoothedHeadXRef.current * 0.78 + rawHeadX * 0.22;
+              smoothedHeadXRef.current * 0.55 + rawHeadX * 0.45;
             smoothedHeadYRef.current =
-              smoothedHeadYRef.current * 0.78 + rawHeadY * 0.22;
+              smoothedHeadYRef.current * 0.55 + rawHeadY * 0.45;
 
+            // Sample optical green channel dynamically centered on the user's face ROI
+            let greenSum = 0;
+            let lumaSum = 0;
+            let roiPixels = 0;
+            const roiX0 = Math.max(8, Math.round(faceCenterX - 20));
+            const roiX1 = Math.min(W - 8, Math.round(faceCenterX + 20));
+            const roiY0 = Math.max(6, Math.round(faceCenterY - 18));
+            const roiY1 = Math.min(H - 12, Math.round(faceCenterY + 12));
+
+            for (let ry = roiY0; ry < roiY1; ry++) {
+              for (let rx = roiX0; rx < roiX1; rx++) {
+                const idx = (ry * W + rx) * 4;
+                greenSum += frame[idx + 1];
+                lumaSum += currentLuma[ry * W + rx];
+                roiPixels++;
+              }
+            }
+            const avgFaceLuma = roiPixels > 0 ? lumaSum / roiPixels : 128;
             const avgGreen = roiPixels > 0 ? greenSum / roiPixels : 128;
 
             // Store rPPG green channel sample
