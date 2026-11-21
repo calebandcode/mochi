@@ -133,6 +133,10 @@ export function useSmartSpectraCamera(enabled: boolean) {
         if (payload.type === "status") {
           const isNative = payload.runtimeMode === "native-presage-sdk";
           nativeActiveRef.current = isNative;
+          if (isNative) {
+            setIsReady(true);
+            setError(null);
+          }
           setSnapshot((prev) => ({
             ...prev,
             sdkBridgeConnected: isNative,
@@ -234,9 +238,9 @@ export function useSmartSpectraCamera(enabled: boolean) {
           if (payload.landmarkCenter) {
             const rawX = Number(payload.landmarkCenter.x);
             const rawY = Number(payload.landmarkCenter.y);
-            // Support either normalized [0..1] or pixel [0..320, 0..240] coordinates
-            const normX = rawX > 1.5 ? rawX / 320 : rawX;
-            const normY = rawY > 1.5 ? rawY / 240 : rawY;
+            // Support either normalized [0..1] or 640x480 pixel coordinates
+            const normX = rawX > 1.5 ? rawX / 640 : rawX;
+            const normY = rawY > 1.5 ? rawY / 480 : rawY;
             const targetHeadX = Math.max(-1, Math.min(1, -(normX - 0.5) * 3.2));
             const targetHeadY = Math.max(-1, Math.min(1, (normY - 0.45) * 3.0));
             smoothedHeadXRef.current =
@@ -299,115 +303,36 @@ export function useSmartSpectraCamera(enabled: boolean) {
       }
     };
 
-    // 2. Capture webcam and stream live 320x240 RGBA frames to SmartSpectraSDK.sendFrame()
-    async function initCamera() {
-      try {
-        setError(null);
-        const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 320 },
-            height: { ideal: 240 },
-            facingMode: "user",
-          },
-          audio: false,
-        });
+    // 2. Heartbeat ripple animation loop driven strictly by live Presage SDK pulseBpm.
+    // Note: The native C++ SmartSpectraSDK captures the hardware camera directly at 30 FPS
+    // via `sdk.useCamera()`, so the browser does not open a competing `getUserMedia()` lock.
+    const loop = () => {
+      if (cancelled) return;
+      const now = performance.now();
 
-        if (cancelled) {
-          mediaStream.getTracks().forEach((t) => t.stop());
-          return;
+      const liveBpm = latestPulseBpmRef.current;
+      if (
+        nativeActiveRef.current &&
+        latestFacePresentRef.current &&
+        liveBpm > 30
+      ) {
+        const beatIntervalMs = (60 / liveBpm) * 1000;
+        if (now - lastBeatTimeRef.current >= beatIntervalMs) {
+          lastBeatTimeRef.current = now;
+          beatCounterRef.current += 1;
+          setSnapshot((prev) => ({
+            ...prev,
+            heartbeatCount: beatCounterRef.current,
+            heartbeatAngle:
+              (Math.random() - 0.5) * Math.PI * 1.2 - Math.PI / 2,
+          }));
         }
-
-        streamRef.current = mediaStream;
-
-        if (!videoRef.current) {
-          const v = document.createElement("video");
-          v.playsInline = true;
-          v.muted = true;
-          videoRef.current = v;
-        }
-
-        videoRef.current.srcObject = mediaStream;
-        await videoRef.current.play();
-        setIsReady(true);
-
-        const SDK_W = 320;
-        const SDK_H = 240;
-        const sdkCanvas = document.createElement("canvas");
-        sdkCanvas.width = SDK_W;
-        sdkCanvas.height = SDK_H;
-        const sdkCtx = sdkCanvas.getContext("2d", { willReadFrequently: true });
-
-        let lastPushMs = 0;
-        let pushInFlight = false;
-        let lastTsUs = 0;
-
-        const loop = () => {
-          if (cancelled) return;
-          const now = performance.now();
-          const video = videoRef.current;
-
-          if (
-            nativeActiveRef.current &&
-            sdkCtx &&
-            video &&
-            video.readyState >= 2 &&
-            !pushInFlight &&
-            now - lastPushMs >= 50
-          ) {
-            lastPushMs = now;
-            pushInFlight = true;
-            sdkCtx.drawImage(video, 0, 0, SDK_W, SDK_H);
-            const rgbaBytes = sdkCtx.getImageData(0, 0, SDK_W, SDK_H).data;
-            const tsUs = Math.max(lastTsUs + 33333, Math.round(now * 1000));
-            lastTsUs = tsUs;
-
-            fetch("/api/smartspectra/frame", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/octet-stream",
-                "x-frame-width": String(SDK_W),
-                "x-frame-height": String(SDK_H),
-                "x-frame-ts": String(tsUs),
-              },
-              body: rgbaBytes,
-            })
-              .catch(() => {})
-              .finally(() => {
-                pushInFlight = false;
-              });
-          }
-
-          // Trigger heartbeat ripple ONLY when live Presage SDK has locked onto a real pulseBpm
-          const liveBpm = latestPulseBpmRef.current;
-          if (
-            nativeActiveRef.current &&
-            latestFacePresentRef.current &&
-            liveBpm > 30
-          ) {
-            const beatIntervalMs = (60 / liveBpm) * 1000;
-            if (now - lastBeatTimeRef.current >= beatIntervalMs) {
-              lastBeatTimeRef.current = now;
-              beatCounterRef.current += 1;
-              setSnapshot((prev) => ({
-                ...prev,
-                heartbeatCount: beatCounterRef.current,
-                heartbeatAngle:
-                  (Math.random() - 0.5) * Math.PI * 1.2 - Math.PI / 2,
-              }));
-            }
-          }
-
-          rafId = requestAnimationFrame(loop);
-        };
-
-        rafId = requestAnimationFrame(loop);
-      } catch {
-        setError("Camera access was declined or unavailable.");
-        setIsReady(false);
       }
-    }
 
-    initCamera();
+      rafId = requestAnimationFrame(loop);
+    };
+
+    rafId = requestAnimationFrame(loop);
 
     return () => {
       cancelled = true;

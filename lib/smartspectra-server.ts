@@ -148,6 +148,7 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
 
       const {
         SmartSpectraSDK,
+        CameraSelection,
         PixelFormat,
         ValidationCode,
         breathingMetrics,
@@ -320,11 +321,18 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
         "error",
         (code: number, message: string, retryable: boolean) => {
           state.lastError = message;
+          state.running = false;
           broadcast({ type: "sdk_error", code, message, retryable });
         }
       );
 
-      sdk.useCustomInput();
+      // Capture directly from the native hardware camera at 30 FPS in C++
+      // (avoids HTTP frame serialization bottlenecks and guarantees steady 30 FPS for rPPG).
+      sdk.useCamera(CameraSelection.default, {
+        width: 640,
+        height: 480,
+        fps: 30,
+      });
       sdk.start();
 
       state.sdk = sdk;
