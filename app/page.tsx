@@ -134,62 +134,39 @@ export default function MochiPage() {
     if (
       storyStage !== "awakening" ||
       !snapshot.sdkBridgeConnected ||
-      !snapshot.facePresent
+      !snapshot.facePresent ||
+      snapshot.pulseBpm > 0
     ) {
       return;
     }
 
     const calibTimer = setInterval(() => {
-      setAwakeningProgress((prev) => {
-        const step = snapshot.pulseBpm > 0 ? 0.25 : 0.12;
-        const next = Math.min(1, prev + step);
-        if (soundEnabled && next < 1 && Math.round(next * 10) % 2 === 0) {
-          sfx.playHeartbeat();
-        }
-        if (next >= 1) {
-          setTimeout(() => {
-            if (soundEnabled) sfx.playChime();
-            setStoryStage("alive");
-            setSelectedMood("grin");
-          }, 320);
-        }
-        return next;
-      });
-    }, 450);
+      setAwakeningProgress((prev) =>
+        prev < 0.85 ? Math.min(0.85, prev + 0.035) : prev
+      );
+    }, 500);
     return () => clearInterval(calibTimer);
   }, [
     storyStage,
     snapshot.sdkBridgeConnected,
     snapshot.facePresent,
     snapshot.pulseBpm,
-    soundEnabled,
   ]);
 
   useEffect(() => {
     if (storyStage !== "awakening") return;
 
-    if (
-      snapshot.facePresent &&
-      snapshot.heartbeatCount > lastProcessedBeatRef.current
-    ) {
-      lastProcessedBeatRef.current = snapshot.heartbeatCount;
-
-      setAwakeningProgress((prev) => {
-        const next = Math.min(1, Math.max(prev, 0.45) + 0.28);
-        if (soundEnabled && next < 1) {
-          sfx.playHeartbeat();
-        }
-        if (next >= 1) {
-          setTimeout(() => {
-            if (soundEnabled) sfx.playChime();
-            setStoryStage("alive");
-            setSelectedMood("grin");
-          }, 380);
-        }
-        return next;
-      });
+    if (snapshot.facePresent && snapshot.pulseBpm > 0) {
+      setAwakeningProgress(1);
+      if (soundEnabled) sfx.playHeartbeat();
+      const wakeTimer = setTimeout(() => {
+        if (soundEnabled) sfx.playChime();
+        setStoryStage("alive");
+        setSelectedMood("grin");
+      }, 420);
+      return () => clearTimeout(wakeTimer);
     }
-  }, [storyStage, snapshot.facePresent, snapshot.heartbeatCount, soundEnabled]);
+  }, [storyStage, snapshot.facePresent, snapshot.pulseBpm, soundEnabled]);
 
   useEffect(() => {
     if (storyStage !== "awakening" || snapshot.facePresent) return;
@@ -729,8 +706,9 @@ export default function MochiPage() {
                       </p>
                     ) : snapshot.pulseBpm === 0 ? (
                       <p className="text-[11px] text-muted-foreground">
-                        {snapshot.validationHint ||
-                          "Calibrating live pulse with Presage SmartSpectra SDK..."}
+                        {snapshot.validationHint
+                          ? `${snapshot.validationHint} · ${Math.round(awakeningProgress * 100)}%`
+                          : `Calibrating live pulse · ${Math.round(awakeningProgress * 100)}%`}
                       </p>
                     ) : storyStage === "awakening" ? (
                       <p className="text-[11px] text-muted-foreground">
