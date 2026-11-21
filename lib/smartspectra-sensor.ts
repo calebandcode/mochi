@@ -137,6 +137,10 @@ export function useSmartSpectraCamera(enabled: boolean) {
         if (payload.type === "status") {
           const isNative = payload.runtimeMode === "native-presage-sdk";
           nativeActiveRef.current = isNative;
+          if (isNative) {
+            setIsReady(true);
+            setError(null);
+          }
           setSnapshot((prev) => ({
             ...prev,
             sdkBridgeConnected: isNative,
