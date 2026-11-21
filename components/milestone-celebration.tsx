@@ -23,14 +23,12 @@ export function MilestoneCelebration({
 }: MilestoneCelebrationProps) {
   const [displayNumber, setDisplayNumber] = useState(0);
 
-  // Play celebratory chime sound on mount
   useEffect(() => {
     if (soundEnabled) {
       sfx.playChime();
     }
   }, [soundEnabled]);
 
-  // Smooth number count-up animation to target streak
   useEffect(() => {
     const target = Math.max(1, streak);
     const duration = 900;
@@ -39,7 +37,6 @@ export function MilestoneCelebration({
     const animateNumber = (now: number) => {
       const elapsed = now - startTime;
       const progress = Math.min(1, elapsed / duration);
-      // Ease out cubic
       const eased = 1 - Math.pow(1 - progress, 3);
       setDisplayNumber(Math.round(eased * target));
 
@@ -60,7 +57,6 @@ export function MilestoneCelebration({
       transition={{ duration: 0.35, ease: "easeOut" }}
       className="fixed inset-0 z-50 flex flex-col items-center justify-between p-6 sm:p-10 bg-background/98 backdrop-blur-md select-none overflow-y-auto"
     >
-      {/* Top spacing */}
       <div className="w-full flex justify-end">
         <button
           type="button"
@@ -72,9 +68,7 @@ export function MilestoneCelebration({
         </button>
       </div>
 
-      {/* Main Central Content: Mochi with Soft Ambient Flame + Huge Milestone Number */}
       <div className="flex flex-col items-center justify-center my-auto w-full max-w-sm">
-        {/* ─── Mochi Wrapped in Soft Ambient Flame Aura ─── */}
         <motion.div
           initial={{ scale: 0.65, y: 24, opacity: 0 }}
           animate={{ scale: 1, y: 0, opacity: 1 }}
@@ -86,7 +80,6 @@ export function MilestoneCelebration({
           }}
           className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center"
         >
-          {/* Layer 1: Soft Warm Radial Ambient Halo */}
           <motion.div
             animate={{
               scale: [0.94, 1.08, 0.94],
@@ -105,7 +98,6 @@ export function MilestoneCelebration({
             }}
           />
 
-          {/* Layer 2: Soft Ambient Flame Aura Silhouette */}
           <motion.div
             animate={{
               y: [-4, 4, -4],
@@ -138,7 +130,6 @@ export function MilestoneCelebration({
                 </filter>
               </defs>
 
-              {/* Feathered Warm Ambient Flame Trail Contour */}
               <path
                 d="M 160 18 C 235 18, 275 65, 270 145 C 265 195, 225 240, 195 285 C 175 315, 162 332, 155 335 C 145 332, 130 305, 115 270 C 85 205, 55 145, 60 95 C 65 45, 105 18, 160 18 Z"
                 fill="url(#soft-flame-ambient)"
@@ -147,9 +138,7 @@ export function MilestoneCelebration({
             </svg>
           </motion.div>
 
-          {/* Layer 3: Delicate Floating Golden Embers & Sparks */}
           <div className="absolute inset-0 pointer-events-none -z-10 overflow-visible">
-            {/* Upper right embers */}
             <motion.div
               animate={{ y: [-4, 4, -4], opacity: [0.5, 0.95, 0.5] }}
               transition={{ repeat: Infinity, duration: 2.2, ease: "easeInOut" }}
@@ -166,7 +155,6 @@ export function MilestoneCelebration({
               className="absolute top-24 -right-4 w-2 h-2.5 rounded-full bg-orange-400/75 blur-[0.5px]"
             />
 
-            {/* Bottom trailing sparks */}
             <motion.div
               animate={{ y: [-2, 4, -2], opacity: [0.3, 0.75, 0.3] }}
               transition={{ repeat: Infinity, duration: 2.0, delay: 0.8, ease: "easeInOut" }}
@@ -178,7 +166,6 @@ export function MilestoneCelebration({
               className="absolute bottom-6 left-12 w-1.5 h-2 rounded-full bg-yellow-500/75"
             />
 
-            {/* Left gentle spark */}
             <motion.div
               animate={{ y: [-4, 3, -4], opacity: [0.3, 0.8, 0.3] }}
               transition={{ repeat: Infinity, duration: 2.7, delay: 0.5, ease: "easeInOut" }}
@@ -186,7 +173,6 @@ export function MilestoneCelebration({
             />
           </div>
 
-          {/* Layer 4: Living, Celebratory Mochi Himself */}
           <motion.div
             animate={{
               y: [-4, 4, -4],
@@ -209,26 +195,22 @@ export function MilestoneCelebration({
           </motion.div>
         </motion.div>
 
-        {/* ─── Massive Milestone Number (Matching "1599" in Reference Image) ─── */}
         <motion.div
           initial={{ scale: 0.8, y: 20, opacity: 0 }}
           animate={{ scale: 1, y: 0, opacity: 1 }}
           transition={{ duration: 0.45, delay: 0.22, ease: "easeOut" }}
           className="mt-4 sm:mt-6 text-center select-none"
         >
-          {/* Big Rounded Numeral */}
           <div className="text-[96px] sm:text-[124px] font-black tracking-tight leading-none text-[#d1d5db] drop-shadow-xs font-sans">
             {displayNumber}
           </div>
 
-          {/* Clean Label Underneath */}
           <div className="mt-1 flex items-center justify-center gap-2">
             <span className="text-xs sm:text-sm font-mono font-bold uppercase tracking-[0.22em] text-muted-foreground">
               {isNewDayIncrement ? "Stillness Streak" : "Streak Maintained"}
             </span>
           </div>
 
-          {/* Encouraging Quote in Mochi's Handwritten Font */}
           <p
             className="mt-4 text-lg sm:text-xl font-bold text-foreground/90 font-caveat tracking-wide"
             style={{ fontFamily: "var(--font-caveat), cursive" }}
@@ -240,7 +222,6 @@ export function MilestoneCelebration({
         </motion.div>
       </div>
 
-      {/* Bottom Floating Action Button */}
       <motion.div
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}

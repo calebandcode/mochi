@@ -6,42 +6,24 @@ export type BiometricExpression = "calm" | "grin" | "surprised";
 export type BreathState = "inhaling" | "exhaling" | "steady";
 
 export interface SmartSpectraSnapshot {
-  /** True ONLY when the native Presage SmartSpectra SDK reports a valid face in view */
   facePresent: boolean;
-  /** -1 (full exhale) to +1 (full inhale), driven strictly by Presage breathing.upperTrace */
   breathPhase: number;
-  /** Human-readable current respiratory state derived from Presage breathing trace */
   breathState: BreathState;
-  /** Rolling 36-point breathing waveform (-1 to +1) from Presage SDK */
   breathTrace: number[];
-  /** Rolling 36-point cardiac arterial pressure waveform (-1 to +1) from Presage SDK */
   pulseTrace: number[];
-  /** Live breathing rate in breaths/min from Presage breathing.rate (0 until locked) */
   breathingRateBpm: number;
-  /** Live heart rate in BPM from Presage cardio.pulseRate (0 until locked) */
   pulseBpm: number;
-  /** Increments ONLY when Presage SDK reports a face and a live pulse rate */
   heartbeatCount: number;
-  /** Angle (radians) around Mochi where the latest heartbeat ripple originates */
   heartbeatAngle: number;
-  /** Facial expression strictly from Presage face.expression */
   expression: BiometricExpression;
-  /** Normalized head offset (-1 to +1) strictly from Presage face.landmarks */
   headX: number;
   headY: number;
-  /** True ONLY when connected to the live native @smartspectra/node-sdk backend */
   sdkBridgeConnected: boolean;
-  /** Active runtime mode reported by /api/smartspectra/stream */
   runtimeMode: "native-presage-sdk" | "serverless-fallback" | "connecting";
-  /** Latest validation hint from Presage SDK (e.g. "No face found", "Too dark") */
   validationHint: string;
-  /** Explicit SDK error or missing API key notice */
   sdkError: string | null;
-  /** Latest HRV RMSSD (ms) from Presage cardio.hrv when available */
   hrvRmssd: number | null;
-  /** Native @smartspectra/node-sdk version reported by backend */
   sdkVersion: string;
-  /** Hardware camera name reported by @smartspectra/node-sdk */
   cameraName: string;
 }
 
@@ -67,22 +49,10 @@ const INITIAL_SNAPSHOT: SmartSpectraSnapshot = {
   cameraName: "Webcam",
 };
 
-/**
- * Pure Presage SmartSpectra SDK v3.5.0 React Hook (Zero Fallback / Zero Simulated Vitals).
- *
- * 1. Opens the user's webcam via `getUserMedia` (320x240) and streams raw RGBA frames
- *    in volatile memory to `POST /api/smartspectra/frame` -> `SmartSpectraSDK.sendFrame()`.
- * 2. Subscribes to `GET /api/smartspectra/stream` (SSE) to receive live decoded Presage
- *    protobuf metrics (`cardio`, `breathing`, `face`) and `validationStatus` events.
- * 3. If `SMARTSPECTRA_API_KEY` is missing or the native SDK is unavailable, no vitals
- *    are fabricated: BPM remains 0 (`--`), facePresent remains false, and `sdkError` is surfaced.
- */
 export function useSmartSpectraCamera(enabled: boolean) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const [isReady, setIsReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [snapshot, setSnapshot] = useState<SmartSpectraSnapshot>(INITIAL_SNAPSHOT);
+  const [snapshot, setSnapshot] =
+    useState<SmartSpectraSnapshot>(INITIAL_SNAPSHOT);
 
   const nativeActiveRef = useRef(false);
   const lastBeatTimeRef = useRef(0);
@@ -96,13 +66,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const validationFaceOkRef = useRef(true);
 
   const stopCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
     nativeActiveRef.current = false;
     lastBeatTimeRef.current = 0;
     beatCounterRef.current = 0;
@@ -125,10 +88,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
     let cancelled = false;
     let rafId = 0;
-    let eventSource: EventSource | null = null;
+    const eventSource = new EventSource("/api/smartspectra/stream");
 
-    // 1. Subscribe to live Presage SmartSpectra SDK SSE stream
-    eventSource = new EventSource("/api/smartspectra/stream");
     eventSource.onmessage = (event) => {
       if (cancelled) return;
       try {
@@ -139,7 +100,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
           nativeActiveRef.current = isNative;
           if (isNative) {
             setIsReady(true);
-            setError(null);
           }
           setSnapshot((prev) => ({
             ...prev,
@@ -204,7 +164,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
         } else if (payload.type === "metrics") {
           if (!nativeActiveRef.current) return;
 
-          // Normalize pulse waveform
           let nextPulseTrace: number[] | null = null;
           if (Array.isArray(payload.pulseTrace) && payload.pulseTrace.length > 0) {
             const pts = payload.pulseTrace as number[];
@@ -218,7 +177,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
             );
           }
 
-          // Normalize breathing waveform & derive phase/state
           let nextBreathPhase: number | null = null;
           let nextBreathTrace: number[] | null = null;
           let nextBreathState: BreathState | null = null;
@@ -244,13 +202,11 @@ export function useSmartSpectraCamera(enabled: boolean) {
             }
           }
 
-          // Derive headX / headY strictly from Presage face.landmarks
           const hasLandmarks = Boolean(payload.landmarkCenter);
           if (payload.landmarkCenter) {
             lastLandmarkAtRef.current = performance.now();
             const rawX = Number(payload.landmarkCenter.x);
             const rawY = Number(payload.landmarkCenter.y);
-            // Support normalized [0..1] or 640x480 pixel coordinates
             const normX = rawX > 1.5 ? rawX / 640 : rawX;
             const normY = rawY > 1.5 ? rawY / 480 : rawY;
             const targetHeadX = Math.max(-1, Math.min(1, -(normX - 0.5) * 3.6));
@@ -261,8 +217,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
               smoothedHeadYRef.current * 0.5 + targetHeadY * 0.5;
           }
 
-          // Only mark facePresent=true if Presage has emitted actual 478-point face landmarks recently
-          // AND validationStatus hasn't reported kNoFaceFound.
           const faceActiveNow =
             validationFaceOkRef.current &&
             (hasLandmarks ||
@@ -338,18 +292,13 @@ export function useSmartSpectraCamera(enabled: boolean) {
             headY: faceActiveNow ? smoothedHeadYRef.current : 0,
           }));
         }
-      } catch {
-        // Ignore malformed SSE packet
-      }
+      } catch {}
     };
 
-    // 2. Heartbeat ripple & stale-face watchdog driven strictly by live Presage SDK events.
-    // The native C++ SmartSpectraSDK captures the hardware camera directly at 30 FPS via useCamera().
     const loop = () => {
       if (cancelled) return;
       const now = performance.now();
 
-      // If Presage hasn't detected 478-point face landmarks for >1.2s, drop facePresent immediately
       if (
         latestFacePresentRef.current &&
         lastLandmarkAtRef.current > 0 &&
@@ -401,15 +350,13 @@ export function useSmartSpectraCamera(enabled: boolean) {
     return () => {
       cancelled = true;
       if (rafId) cancelAnimationFrame(rafId);
-      if (eventSource) eventSource.close();
+      eventSource.close();
       stopCamera();
     };
   }, [enabled, stopCamera]);
 
   return {
-    videoRef,
     isReady,
-    error,
     snapshot,
     stopCamera,
   };

@@ -17,12 +17,9 @@ export async function downloadQuoteCard(
       link.href = dataUrl;
       link.click();
       return;
-    } catch (err) {
-      console.warn("html-to-image fallback triggered", err);
-    }
+    } catch {}
   }
 
-  // Fallback: Crisp 1080x1080 Canvas drawing
   const canvas = document.createElement("canvas");
   const size = 1080;
   canvas.width = size;
@@ -30,11 +27,9 @@ export async function downloadQuoteCard(
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  // Background
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, size, size);
 
-  // Soft ambient radial glow
   const glowGrad = ctx.createRadialGradient(
     size / 2,
     size / 2,
@@ -48,14 +43,12 @@ export async function downloadQuoteCard(
   ctx.fillStyle = glowGrad;
   ctx.fillRect(0, 0, size, size);
 
-  // Squircle Card Dimensions
   const cardW = 740;
   const cardH = 620;
   const cardX = (size - cardW) / 2;
   const cardY = (size - cardH) / 2 - 24;
   const radius = 96;
 
-  // Shadow + Body Fill
   ctx.save();
   ctx.shadowColor = "rgba(0, 0, 0, 0.08)";
   ctx.shadowBlur = 36;
@@ -66,14 +59,12 @@ export async function downloadQuoteCard(
   ctx.fill();
   ctx.restore();
 
-  // Border
   ctx.strokeStyle = affirmation.theme.border || "#e4e4e7";
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.roundRect(cardX, cardY, cardW, cardH, radius);
   ctx.stroke();
 
-  // Text
   ctx.fillStyle = affirmation.theme.text || "#18181b";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -91,7 +82,6 @@ export async function downloadQuoteCard(
     ctx.fillText(line, size / 2, startY + idx * lineHeight);
   });
 
-  // Author if any
   if (affirmation.author) {
     ctx.font = "italic 28px 'Caveat', cursive, sans-serif";
     ctx.fillStyle = affirmation.theme.text || "#18181b";
@@ -102,7 +92,6 @@ export async function downloadQuoteCard(
     );
   }
 
-  // Watermark
   ctx.font = "500 20px 'Geist Mono', monospace";
   ctx.fillStyle = "#a1a1aa";
   ctx.fillText("Mochi · Breathe with me", size / 2, size - 70);
@@ -113,4 +102,3 @@ export async function downloadQuoteCard(
   link.href = dataUrl;
   link.click();
 }
-

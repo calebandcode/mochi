@@ -66,7 +66,6 @@ export function ConsentModal({
     <AnimatePresence>
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 select-none">
-          {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -75,7 +74,6 @@ export function ConsentModal({
             className="fixed inset-0 bg-black/45 backdrop-blur-sm"
           />
 
-          {/* Modal Container (Aesthetic Inspired by Reference Design) */}
           <motion.div
             initial={{ opacity: 0, scale: 0.94, y: 16 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -83,7 +81,6 @@ export function ConsentModal({
             transition={{ type: "spring", stiffness: 340, damping: 26 }}
             className="relative w-full max-w-[390px] sm:max-w-[425px] bg-[#ffffff] rounded-[34px] p-6 sm:p-8 shadow-[0_24px_60px_-12px_rgba(0,0,0,0.35)] border border-neutral-100 flex flex-col z-10 overflow-hidden"
           >
-            {/* Top Row: Serif Title + Step Dots */}
             <div className="flex items-start justify-between gap-4 mb-4">
               <div className="flex flex-col">
                 <span className="text-[10px] sm:text-[11px] font-mono tracking-widest uppercase font-semibold text-muted-foreground/80 mb-1">
@@ -94,7 +91,6 @@ export function ConsentModal({
                 </h3>
               </div>
 
-              {/* Pagination Dots (Matching Reference: Yellow active dot) */}
               <div className="flex items-center gap-1.5 pt-2">
                 {steps.map((_, i) => (
                   <span
@@ -109,9 +105,7 @@ export function ConsentModal({
               </div>
             </div>
 
-            {/* Central Visual Card (Matching Reference: Warm Ambient Card with Three Dots) */}
             <div className="relative w-full h-44 sm:h-48 rounded-2xl bg-gradient-to-b from-[#fef7eb] via-[#fff3e0] to-[#fef0ea] border border-amber-200/50 flex flex-col items-center justify-center p-4 overflow-hidden mb-5">
-              {/* Soft warm radial glow inside card */}
               <div
                 className="absolute inset-0 pointer-events-none opacity-60"
                 style={{
@@ -120,7 +114,6 @@ export function ConsentModal({
                 }}
               />
 
-              {/* Animated Graphic per Step */}
               <AnimatePresence mode="wait">
                 <motion.div
                   key={step}
@@ -189,7 +182,6 @@ export function ConsentModal({
                     </div>
                   )}
 
-                  {/* Three Iconic Dots from the Reference Image */}
                   <div className="flex items-center gap-2 mt-3 opacity-80">
                     <span className="w-2.5 h-2.5 rounded-full bg-neutral-900" />
                     <span className="w-2.5 h-2.5 rounded-full bg-neutral-900" />
@@ -198,13 +190,11 @@ export function ConsentModal({
                 </motion.div>
               </AnimatePresence>
 
-              {/* Bottom Tag inside card */}
               <span className="absolute bottom-2.5 text-[10px] font-mono uppercase tracking-widest text-neutral-500 font-semibold">
                 {currentStep.badge}
               </span>
             </div>
 
-            {/* Explanation Copy */}
             <div className="min-h-[110px] sm:min-h-[120px] flex flex-col justify-start mb-6">
               <h4 className="text-sm sm:text-base font-semibold tracking-tight text-foreground mb-1">
                 {currentStep.summary}
@@ -214,7 +204,6 @@ export function ConsentModal({
               </p>
             </div>
 
-            {/* Bottom Actions */}
             <div className="flex items-center justify-between gap-3 pt-2">
               <button
                 type="button"

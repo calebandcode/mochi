@@ -37,7 +37,6 @@ export interface ReactiveCharacterProps {
   onViewModeChange?: (mode: "face" | "affirmation") => void;
   affirmationIndex?: number;
   onAffirmationChange?: (index: number) => void;
-  // ─── SmartSpectra Biometric & Co-Regulation Props ─────────────────────────
   cameraActive?: boolean;
   /** 0 (lifeless) to 1 (blood-flow streams meet at bottom & Mochi wakes up) */
   awakeningProgress?: number;
@@ -58,7 +57,6 @@ export interface ReactiveCharacterProps {
   breatheCoachMessage?: BreatheCoachMessage | null;
 }
 
-// ─── Playful Web Audio Sound Synthesizer ──────────────────────────────────────
 class SoundFX {
   private ctx: AudioContext | null = null;
 
@@ -227,7 +225,6 @@ class SoundFX {
       this.init();
       if (!this.ctx) return;
       const now = this.ctx.currentTime;
-      // Soft lub-dub pulse sound
       [0, 0.14].forEach((offset, i) => {
         if (!this.ctx) return;
         const osc = this.ctx.createOscillator();
@@ -249,7 +246,6 @@ class SoundFX {
 
 export const sfx = new SoundFX();
 
-// ─── Mathematical Moving Wavy Border Generator ──────────────────────────────
 interface WaveParams {
   time: number;
   width: number;
@@ -335,7 +331,6 @@ function generateWavySquirclePath({
   const dragAngle = Math.atan2(dragOffset.y, dragOffset.x);
 
   for (let i = 0; i < pointsCount; i++) {
-    // Start at -Math.PI / 2 (top center) so blood-flow border streams split left & right from the top
     const theta = (i / pointsCount) * Math.PI * 2 - Math.PI / 2;
     const cosT = Math.cos(theta);
     const sinT = Math.sin(theta);
@@ -352,23 +347,19 @@ function generateWavySquirclePath({
 
     let displacement = (wave1 + wave2 + wave3) * effectiveAmp;
 
-    // Petting / Co-regulation purr ripple
     if (isPetting) {
       displacement += Math.sin(16 * theta - 28 * t) * 4.2;
     }
 
-    // Dizzy rolling vortex ripples
     if (mood === "dizzy" && !isAffirmation) {
       displacement += Math.sin(3 * theta - 9 * t) * 14;
     }
 
-    // Elastic Drag Stretch Deformation
     if (dragDist > 5) {
       const angleDelta = Math.cos(theta - dragAngle);
       displacement += angleDelta * (dragDist * 0.28);
     }
 
-    // Poke shockwave ripple
     if (pokeRipple && pokeRipple.strength > 0.01) {
       const angleDiff = Math.atan2(
         Math.sin(theta - pokeRipple.angle),
@@ -382,7 +373,6 @@ function generateWavySquirclePath({
         Math.sin(ripplePhase) * 22 * spatialEnvelope * timeEnvelope;
     }
 
-    // Heartbeat pulse ripple around Mochi's edge (travels symmetrically from top to bottom)
     if (heartbeatRipple && heartbeatRipple.strength > 0.01) {
       const angleDiff = Math.atan2(
         Math.sin(theta - heartbeatRipple.angle),
@@ -403,7 +393,6 @@ function generateWavySquirclePath({
     points.push([x, y]);
   }
 
-  // Smooth closed Cubic Bezier spline
   const n = points.length;
   let d = `M ${points[0][0].toFixed(2)} ${points[0][1].toFixed(2)}`;
 
@@ -496,7 +485,6 @@ export function ReactiveCharacter({
   const isDizzyRef = useRef(false);
   const idleTimer = useRef<NodeJS.Timeout | null>(null);
 
-  // Poke shockwave state
   const pokeRippleRef = useRef<{
     angle: number;
     startTime: number;
@@ -504,7 +492,6 @@ export function ReactiveCharacter({
     strength: number;
   } | null>(null);
 
-  // Heartbeat edge ripple state
   const heartbeatRippleRef = useRef<{
     angle: number;
     startTime: number;
@@ -512,7 +499,6 @@ export function ReactiveCharacter({
     strength: number;
   } | null>(null);
 
-  // Smoothed breathing displacement ref for 60fps loop
   const targetBreathRef = useRef(0);
   const currentBreathDispRef = useRef(0);
   const [isHeartbeatPulse, setIsHeartbeatPulse] = useState(false);
@@ -521,7 +507,6 @@ export function ReactiveCharacter({
     targetBreathRef.current = breathPhase;
   }, [breathPhase]);
 
-  // Trigger a visible edge ripple + subtle pulse thump every time a heartbeat arrives
   useEffect(() => {
     if ((!cameraActive && !breatheWithMeActive) || heartbeatCount === 0) return;
     heartbeatRippleRef.current = {
@@ -535,21 +520,17 @@ export function ReactiveCharacter({
     return () => clearTimeout(t);
   }, [heartbeatCount, heartbeatAngle, cameraActive, breatheWithMeActive]);
 
-  // Camera head pose softly drives Mochi's gaze and body lean when camera is on
   useEffect(() => {
     if (!cameraActive || isCardMode) {
       bodyX.set(0);
       bodyY.set(0);
       return;
     }
-    // Gaze follows user's face position
-    mouseX.set(cameraHeadX * 36);
-    mouseY.set(cameraHeadY * 24);
-    // Head tilts gently in direction of gaze
-    headTilt.set(cameraHeadX * 10);
-    // Whole squircle body leans and floats toward user's face
-    bodyX.set(cameraHeadX * 32);
-    bodyY.set(cameraHeadY * 20);
+    mouseX.set(cameraHeadX * 42);
+    mouseY.set(cameraHeadY * 28);
+    headTilt.set(cameraHeadX * 12);
+    bodyX.set(cameraHeadX * 36);
+    bodyY.set(cameraHeadY * 24);
   }, [
     cameraActive,
     cameraHeadX,
@@ -562,7 +543,6 @@ export function ReactiveCharacter({
     bodyY,
   ]);
 
-  // Purr sound during deep calm in "Breathe with me"
   const isCoRegulatingPurr = breatheWithMeActive && calmProgress >= 0.55;
   useEffect(() => {
     if (!isCoRegulatingPurr || !soundEnabled || isCardMode) return;
@@ -588,7 +568,6 @@ export function ReactiveCharacter({
     [onMoodChange]
   );
 
-  // ─── Real-Time 60fps Moving Wavy Border Animation Loop ────────────────────
   useEffect(() => {
     let animId: number;
     const startTime = performance.now();
@@ -597,7 +576,6 @@ export function ReactiveCharacter({
       const now = performance.now();
       const elapsed = (now - startTime) / 1000;
 
-      // Smoothly interpolate breath displacement (swells on inhale, shrinks on exhale)
       const desiredDisp =
         (cameraActive || breatheWithMeActive) && !isCardMode
           ? targetBreathRef.current * (breatheWithMeActive ? 30 : 26)
@@ -616,7 +594,6 @@ export function ReactiveCharacter({
         surge = 1.0 + waveBurst * 1.35;
       }
 
-      // As user calms down in "Breathe with me", Mochi's waves smooth out
       const calmSmoothing = breatheWithMeActive
         ? Math.max(0.45, 1.0 - calmProgress * 0.55)
         : 1.0;
@@ -727,7 +704,6 @@ export function ReactiveCharacter({
     calmProgress,
   ]);
 
-  // Procedural blinking (face mode only)
   useEffect(() => {
     if (isCardMode) return;
     const blinkInterval = setInterval(() => {
@@ -744,7 +720,6 @@ export function ReactiveCharacter({
     return () => clearInterval(blinkInterval);
   }, [currentMood, isCardMode]);
 
-  // Global mouse tracking & rapid Left-Right Shake detection
   useEffect(() => {
     if (!interactive) return;
 
@@ -761,14 +736,12 @@ export function ReactiveCharacter({
       const targetY = Math.max(-1, Math.min(1, dy)) * (isCardMode ? 8 : 16);
       const targetTilt = Math.max(-1, Math.min(1, dx)) * (isCardMode ? 4 : 8);
 
-      // When camera is actively sensing, camera face tracking takes priority over mouse cursor
       if (!cameraActive) {
         mouseX.set(targetX);
         mouseY.set(targetY);
         headTilt.set(targetTilt);
       }
 
-      // Rapid Left-Right Shake Detector
       const now = performance.now();
       const dt = now - lastMousePos.current.time;
       const moveX = e.clientX - lastMousePos.current.x;
@@ -941,7 +914,6 @@ export function ReactiveCharacter({
     }
   };
 
-  // Face theme palettes
   const themes = {
     monochrome: {
       bodyColor: "#ffffff",
@@ -985,7 +957,6 @@ export function ReactiveCharacter({
     },
   };
 
-  // In "Breathe with me", Mochi warms up as the user slows down their breathing
   const isWarmedUp = breatheWithMeActive && calmProgress > 0.28;
   const activeFaceTheme = isWarmedUp
     ? {
@@ -1025,7 +996,6 @@ export function ReactiveCharacter({
       className={`relative select-none flex flex-col items-center justify-center w-full max-w-[330px] sm:max-w-[380px] md:max-w-[420px] aspect-[400/344] ${className}`}
       style={{ touchAction: "none" }}
     >
-      {/* ─── Floating Mood Particles ───────────────────────────────── */}
       <AnimatePresence>
         {!isCardMode && !showCoachCard && currentMood === "sleepy" && (
           <motion.div
@@ -1065,12 +1035,10 @@ export function ReactiveCharacter({
         )}
       </AnimatePresence>
 
-      {/* ─── Body Follow & Lean Wrapper ───────────────────────────────── */}
       <motion.div
         style={{ x: bodyX, y: bodyY }}
         className="w-full h-full flex items-center justify-center"
       >
-        {/* ─── Elastic Drag & Interactive Container ──────────────────── */}
         <motion.div
         drag={interactive && !isCardMode}
         dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
@@ -1147,7 +1115,6 @@ export function ReactiveCharacter({
         className={`w-full h-full flex items-center justify-center ${isCardMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"
           } relative`}
       >
-        {/* ─── Unified Dynamic SVG Character Canvas (Wavy Border) ──── */}
         <svg
           viewBox="0 0 400 344"
           className="w-full h-full overflow-visible select-none drop-shadow-xl"
@@ -1190,7 +1157,6 @@ export function ReactiveCharacter({
             </linearGradient>
           </defs>
 
-          {/* ════════════ 1. ANIMATED MOVING WAVY BODY BORDER LAYER ════════════ */}
           <g filter="url(#character-dynamic-shadow)">
             <path
               ref={bodyPathRef}
@@ -1203,7 +1169,6 @@ export function ReactiveCharacter({
               className="transition-[fill,stroke] duration-500 ease-out"
             />
 
-            {/* Blood-flow awakening border: splits left & right from top center until meeting at bottom */}
             <path
               ref={bloodPathRef}
               pathLength={100}
@@ -1237,7 +1202,6 @@ export function ReactiveCharacter({
             />
           </g>
 
-          {/* ════════════ 2. FACE MODE: BLUSH & FACIAL FEATURES ════════════ */}
           <AnimatePresence>
             {!isCardMode && !showCoachCard && (
               <motion.g
@@ -1247,7 +1211,6 @@ export function ReactiveCharacter({
                 exit={{ opacity: 0, scale: 0.6 }}
                 transition={{ duration: 0.25 }}
               >
-                {/* Cheeks */}
                 <motion.g
                   style={{
                     x: currentMood === "dormant" ? 0 : mouseX,
@@ -1283,14 +1246,12 @@ export function ReactiveCharacter({
                   />
                 </motion.g>
 
-                {/* Eyes & Mouth Feature Layer */}
                 <motion.g
                   style={{
                     x: currentMood === "dormant" ? 0 : mouseX,
                     y: currentMood === "dormant" ? 0 : mouseY,
                   }}
                 >
-                  {/* Eyes Layer */}
                   <g fill={activeFaceTheme.faceFill}>
                     {currentMood === "dormant" && (
                       <motion.g
@@ -1302,7 +1263,6 @@ export function ReactiveCharacter({
                         strokeWidth="8.5"
                         strokeLinecap="round"
                       >
-                        {/* Classic plush/spirit doll stitched ×   × eyes */}
                         <path d="M 122 102 L 156 136 M 156 102 L 122 136" />
                         <path d="M 244 102 L 278 136 M 278 102 L 244 136" />
                       </motion.g>
@@ -1407,7 +1367,6 @@ export function ReactiveCharacter({
                     )}
                   </g>
 
-                  {/* Mouth Layer */}
                   <g>
                     {currentMood === "dormant" && (
                       <motion.g
@@ -1540,7 +1499,6 @@ export function ReactiveCharacter({
           </AnimatePresence>
         </svg>
 
-        {/* ════════════ 2.5 COACH QUOTE CARD IN PACED BREATHING ════════════ */}
         <AnimatePresence>
           {showCoachCard && breatheCoachMessage && (
             <motion.div
@@ -1570,7 +1528,6 @@ export function ReactiveCharacter({
           )}
         </AnimatePresence>
 
-        {/* ════════════ 3. CLEAN AFFIRMATION CARD ════════════ */}
         <AnimatePresence>
           {isCardMode && (
             <motion.div

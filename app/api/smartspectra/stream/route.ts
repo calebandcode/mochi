@@ -8,19 +8,8 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/**
- * Presage SmartSpectra SDK v3.5.0 Server-Sent Events (SSE) Live Metrics Stream.
- *
- * Starts the native `@smartspectra/node-sdk` pipeline in custom-input mode using
- * `process.env.SMARTSPECTRA_API_KEY`, and streams live decoded Presage protobuf
- * metrics (`cardio.pulseRate`, `cardio.arterialPressureTrace`, `breathing.rate`,
- * `breathing.upperTrace`, `face.expression`, `face.landmarks`, `validationStatus`)
- * directly to the Mochi client.
- */
 export async function GET(req: NextRequest) {
-  const apiKey = process.env.SMARTSPECTRA_API_KEY?.trim() || "";
-  const hasApiKey = apiKey.length > 0;
-
+  const hasApiKey = Boolean(process.env.SMARTSPECTRA_API_KEY?.trim());
   const state = await ensureSmartSpectraStarted();
   const encoder = new TextEncoder();
 
@@ -39,7 +28,6 @@ export async function GET(req: NextRequest) {
         }
       };
 
-      // Send immediate runtime status handshake
       sendEvent({
         type: "status",
         apiKeyConfigured: hasApiKey,
@@ -50,17 +38,13 @@ export async function GET(req: NextRequest) {
         error: state.lastError ?? undefined,
       });
 
-      // Subscribe to real-time decoded Presage SDK metrics & validation events
       const unsubscribe = subscribeSmartSpectra((event) => {
         sendEvent(event);
       });
 
       const heartbeatTimer = setInterval(() => {
         if (closed) return;
-        sendEvent({
-          type: "keepalive",
-          timestamp: Date.now(),
-        });
+        sendEvent({ type: "keepalive", timestamp: Date.now() });
       }, 15000);
 
       req.signal.addEventListener("abort", () => {

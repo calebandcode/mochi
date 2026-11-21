@@ -62,27 +62,19 @@ export default function MochiPage() {
   const [selectedMood, setSelectedMood] = useState<CharacterMood>("dormant");
   const [soundEnabled] = useState(true);
 
-  // Story lifecycle: "dormant" (lifeless × × eyes) -> "awakening" (red pulse flowing around border) -> "alive"
   const [storyStage, setStoryStage] = useState<StoryStage>("dormant");
-  const [awakeningProgress, setAwakeningProgress] = useState(0); // 0 to 1
+  const [awakeningProgress, setAwakeningProgress] = useState(0);
   const [cameraEnabled, setCameraEnabled] = useState(false);
 
-  // Newspaper Card ("The Daily Mochi" — shown initially as a minimal boxy newspaper card)
   const [showNewspaperCard, setShowNewspaperCard] = useState(true);
   const [showConsentModal, setShowConsentModal] = useState(false);
 
-  // Optional side-by-side webcam preview (toggleable via "W" key)
-  const [showMirrorPreview, setShowMirrorPreview] = useState(false);
-  const previewVideoElRef = useRef<HTMLVideoElement | null>(null);
-  const miniLensVideoRef = useRef<HTMLVideoElement | null>(null);
   const lastProcessedBeatRef = useRef<number>(0);
   const lastUserInteractionRef = useRef<number>(0);
 
-  // Feature #1 & #2: Baseline BPM vs Post-Breathing BPM tracker
   const [baselineBpm, setBaselineBpm] = useState<number | null>(null);
   const [settledBpm, setSettledBpm] = useState<number | null>(null);
 
-  // "Breathe with me" Co-Regulation State
   const [breatheWithMe, setBreatheWithMe] = useState(false);
   const [pacedBreathPhase, setPacedBreathPhase] = useState(0);
   const [pacedBreathLabel, setPacedBreathLabel] = useState<string>("get ready...");
@@ -93,7 +85,6 @@ export default function MochiPage() {
   const lastPacedMoodRef = useRef<string>("calm");
   const lastProgressCommitRef = useRef<number>(0);
 
-  // Dynamic coaching message displayed when morphing into a quote card
   const [breatheCoachMessage, setBreatheCoachMessage] = useState<{
     badge?: string;
     lines: string[];
@@ -101,14 +92,12 @@ export default function MochiPage() {
   } | null>(null);
   const lastCoachMsgRef = useRef<string | null>(null);
 
-  // Gentle idle mindful quote displayed when resting in face mode before "Breathe with me"
   const [idleQuoteMessage, setIdleQuoteMessage] = useState<{
     badge?: string;
     lines: string[];
     hint?: string;
   } | null>(null);
 
-  // Milestone Celebration Screen (Duolingo Flaming Comet Style)
   const [showMilestone, setShowMilestone] = useState(false);
   const [milestoneData, setMilestoneData] = useState<{
     streak: number;
@@ -119,53 +108,17 @@ export default function MochiPage() {
     calmGain: number;
   } | null>(null);
 
-  // View Mode: "face" vs "affirmation"
   const [viewMode, setViewMode] = useState<"face" | "affirmation">("face");
   const [affirmationIndex, setAffirmationIndex] = useState(0);
   const [isDownloadingCard, setIsDownloadingCard] = useState(false);
 
-  const [beatFlash, setBeatFlash] = useState(false);
-
-  // SmartSpectra Camera Hook
-  const { videoRef, isReady, snapshot } = useSmartSpectraCamera(cameraEnabled);
+  const { isReady, snapshot } = useSmartSpectraCamera(cameraEnabled);
 
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const baselineBpmRef = useRef(baselineBpm);
   baselineBpmRef.current = baselineBpm;
 
-  // Flash heart indicator on each beat (only when a real face is present)
-  useEffect(() => {
-    if (!cameraEnabled || !snapshot.facePresent || snapshot.heartbeatCount === 0) {
-      setBeatFlash(false);
-      return;
-    }
-    setBeatFlash(true);
-    const timer = setTimeout(() => setBeatFlash(false), 220);
-    return () => clearTimeout(timer);
-  }, [cameraEnabled, snapshot.facePresent, snapshot.heartbeatCount]);
-
-  // Sync webcam MediaStream into optional mirror preview & awakening mini-lens
-  useEffect(() => {
-    if (!cameraEnabled || !isReady || !videoRef.current?.srcObject) return;
-    if (showMirrorPreview && previewVideoElRef.current) {
-      previewVideoElRef.current.srcObject = videoRef.current.srcObject;
-      previewVideoElRef.current.play().catch(() => { });
-    }
-    if (miniLensVideoRef.current) {
-      miniLensVideoRef.current.srcObject = videoRef.current.srcObject;
-      miniLensVideoRef.current.play().catch(() => { });
-    }
-  }, [
-    showMirrorPreview,
-    cameraEnabled,
-    isReady,
-    videoRef,
-    storyStage,
-    snapshot.facePresent,
-  ]);
-
-  // Capture initial baseline BPM once Mochi wakes up and locks onto your pulse
   useEffect(() => {
     if (
       storyStage === "alive" &&
@@ -177,10 +130,6 @@ export default function MochiPage() {
     }
   }, [storyStage, snapshot.facePresent, snapshot.pulseBpm, baselineBpm]);
 
-  // ─── Stage 2a: Wake Mochi once Presage locks onto your live face & begins streaming ──
-  // Presage streams face landmarks, expressions, and traces immediately (~2-3s), while the
-  // windowed BPM readout settles over ~10-15s. Let Mochi finish waking once live Presage
-  // tracking is active so the user can interact while BPM finishes calibrating.
   useEffect(() => {
     if (
       storyStage !== "awakening" ||
@@ -216,9 +165,6 @@ export default function MochiPage() {
     soundEnabled,
   ]);
 
-  // ─── Stage 2b: Face-Gated Blood-Flow Border Awakening Ritual ───────────────
-  // Advances ONLY when Presage SmartSpectra SDK detects a real face (`snapshot.facePresent`)
-  // and locks onto real cardiac heartbeat peaks (`snapshot.heartbeatCount`)!
   useEffect(() => {
     if (storyStage !== "awakening") return;
 
@@ -245,7 +191,6 @@ export default function MochiPage() {
     }
   }, [storyStage, snapshot.facePresent, snapshot.heartbeatCount, soundEnabled]);
 
-  // If the user turns the camera away during awakening, slowly drain the border back
   useEffect(() => {
     if (storyStage !== "awakening" || snapshot.facePresent) return;
     const drainTimer = setInterval(() => {
@@ -254,7 +199,6 @@ export default function MochiPage() {
     return () => clearInterval(drainTimer);
   }, [storyStage, snapshot.facePresent]);
 
-  // Mirror facial expression from camera when Mochi is alive (with anti-jitter cooldown)
   useEffect(() => {
     if (
       storyStage !== "alive" ||
@@ -265,7 +209,6 @@ export default function MochiPage() {
       return;
     }
 
-    // Give manual user interactions (petting, poking, dragging) priority for 3.5 seconds
     if (performance.now() - lastUserInteractionRef.current < 3500) {
       return;
     }
@@ -291,7 +234,6 @@ export default function MochiPage() {
     snapshot.expression,
   ]);
 
-  // Gentle idle mindful quote cycling when resting in face mode before "Breathe with me"
   useEffect(() => {
     if (
       storyStage !== "alive" ||
@@ -308,7 +250,6 @@ export default function MochiPage() {
     let timeoutId: NodeJS.Timeout;
 
     const scheduleNextQuote = () => {
-      // Give manual user interactions (petting, poking, dragging) priority
       if (performance.now() - lastUserInteractionRef.current < 4500) {
         timeoutId = setTimeout(scheduleNextQuote, 5000);
         return;
@@ -319,14 +260,12 @@ export default function MochiPage() {
       quoteIndex++;
       setIdleQuoteMessage(quote);
 
-      // Morph into quote card for 5.5s, then back to smiling face for 13s
       timeoutId = setTimeout(() => {
         setIdleQuoteMessage(null);
         timeoutId = setTimeout(scheduleNextQuote, 13000);
       }, 5500);
     };
 
-    // First mindful quote after 10 seconds of resting in face mode
     timeoutId = setTimeout(scheduleNextQuote, 10000);
 
     return () => {
@@ -335,7 +274,6 @@ export default function MochiPage() {
     };
   }, [storyStage, cameraEnabled, breatheWithMe, viewMode, showMilestone]);
 
-  // "Breathe with me" Paced Breathing Loop
   useEffect(() => {
     if (!breatheWithMe || viewMode === "affirmation") {
       breatheStartTimeRef.current = null;
@@ -356,7 +294,6 @@ export default function MochiPage() {
     }
 
     let animId: number;
-    // 3s Preparation Warm-up + 18s Restorative Cycles (5s Inhale · 3s Hold · 8s Exhale · 2s Rest)
     const prepDurationSec = 3.0;
     const cycleDurationSec = 18.0;
     const rewardTargetSec = 54.0; // 3 full deep, restorative calm cycles (~54s of breathing)
@@ -371,7 +308,6 @@ export default function MochiPage() {
       let activeCoach: (typeof COACH_MESSAGES)[0] | null = null;
 
       if (elapsedSec < prepDurationSec) {
-        // 0. Preparation Warm-up: 3 seconds to relax, drop shoulders, and settle in
         phase = -1.0;
         nextLabel = elapsedSec < 1.6 ? "get ready..." : "settle in...";
         activeCoach = null;
@@ -380,18 +316,15 @@ export default function MochiPage() {
         const cycleSec = activeElapsed % cycleDurationSec;
 
         if (cycleSec < 5.0) {
-          // 1. Inhale (5.0s): Slow, spacious expansion with calm face
           const t = cycleSec / 5.0;
           phase = -Math.cos(t * Math.PI);
           nextLabel = "breathe in...";
           activeCoach = null;
         } else if (cycleSec < 8.0) {
-          // 2. Hold (3.0s): Noticeable, peaceful stillness at peak breath
           phase = 1.0;
           nextLabel = "hold...";
           activeCoach = null;
         } else if (cycleSec < 16.0) {
-          // 3. Exhale (8.0s): Long, sigh-like release with ample time to absorb quote
           const t = (cycleSec - 8.0) / 8.0;
           phase = Math.cos(t * Math.PI);
           nextLabel = "breathe out...";
@@ -399,7 +332,6 @@ export default function MochiPage() {
             Math.floor(activeElapsed / cycleDurationSec) % COACH_MESSAGES.length;
           activeCoach = COACH_MESSAGES[cycleIdx];
         } else {
-          // 4. Rest (2.0s): Gentle 2s resting stillness before the next breath
           phase = -1.0;
           nextLabel = "rest...";
           activeCoach = null;
@@ -422,7 +354,6 @@ export default function MochiPage() {
       const activeElapsed = Math.max(0, elapsedSec - prepDurationSec);
       const nextProgress = Math.min(1, activeElapsed / rewardTargetSec);
 
-      // Commit progress to state smoothly
       if (
         Math.abs(nextProgress - lastProgressCommitRef.current) >= 0.015 ||
         nextProgress >= 1
@@ -459,7 +390,6 @@ export default function MochiPage() {
         setBreatheCoachMessage(null);
         setBreatheWithMe(false);
 
-        // True Calendar-Day Streak Recording
         const streakResult = recordStillnessSession();
 
         setMilestoneData({
@@ -481,7 +411,6 @@ export default function MochiPage() {
     return () => cancelAnimationFrame(animId);
   }, [breatheWithMe, viewMode, soundEnabled]);
 
-  // Start Camera Awakening
   const handleStartAwakening = useCallback(() => {
     setShowNewspaperCard(false);
     setCameraEnabled(true);
@@ -489,7 +418,6 @@ export default function MochiPage() {
     setSelectedMood("dormant");
   }, []);
 
-  // Affirmation navigation handlers
   const handleNextAffirmation = useCallback(() => {
     setAffirmationIndex((prev) => (prev + 1) % AFFIRMATIONS.length);
   }, []);
@@ -526,7 +454,6 @@ export default function MochiPage() {
     }
   };
 
-  // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -552,8 +479,6 @@ export default function MochiPage() {
           setSelectedMood("surprised");
         } else if (e.key.toLowerCase() === "s") {
           setSelectedMood("grin");
-        } else if (e.key.toLowerCase() === "w") {
-          setShowMirrorPreview((v) => !v);
         }
       }
     };
@@ -581,7 +506,6 @@ export default function MochiPage() {
 
   return (
     <div className="min-h-[100dvh] bg-background text-foreground flex flex-col justify-between overflow-hidden relative selection:bg-[#fef08a] selection:text-black">
-      {/* ─── Soft Warm Ambient Radial Glow (Inspired by Reference) ─── */}
       <div
         aria-hidden="true"
         className="pointer-events-none fixed inset-0 flex items-center justify-center z-0 overflow-hidden"
@@ -595,7 +519,6 @@ export default function MochiPage() {
         />
       </div>
 
-      {/* ─── Minimalist Top Bar ────────────────────────────────────── */}
       <header className="fixed top-0 inset-x-0 z-30 px-6 sm:px-10 py-5 flex items-center justify-between pointer-events-none">
         <div className="pointer-events-auto flex items-center gap-4">
           <button
@@ -610,7 +533,6 @@ export default function MochiPage() {
           </button>
         </div>
 
-        {/* Top-Right Expandable Download Card Button (Affirmation Mode Only) */}
         <AnimatePresence>
           {viewMode === "affirmation" && (
             <motion.div
@@ -656,62 +578,8 @@ export default function MochiPage() {
         </AnimatePresence>
       </header>
 
-      {/* ─── Main Interactive Canvas ──────────────────────────────── */}
       <main className="flex-1 flex flex-col items-center justify-center px-4 pt-12 pb-16 relative z-10 w-full overflow-hidden max-w-full">
-        <div
-          className={`flex flex-col ${showMirrorPreview && cameraEnabled
-            ? "lg:flex-row items-center justify-center gap-6 lg:gap-12"
-            : "items-center justify-center"
-            } w-full max-w-5xl mx-auto`}
-        >
-          {/* Optional Side-by-Side Webcam Feed (press 'W' to toggle) */}
-          <AnimatePresence>
-            {showMirrorPreview && cameraEnabled && (
-              <motion.div
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-                className="relative w-[220px] sm:w-[260px] aspect-[4/3] rounded-none overflow-hidden border border-border bg-surface shrink-0"
-              >
-                <video
-                  ref={previewVideoElRef}
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover -scale-x-100"
-                />
-                <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between px-2.5 py-1 bg-background/90 border border-border text-[11px] font-mono text-foreground">
-                  {snapshot.facePresent ? (
-                    <>
-                      <span className="flex items-center gap-1">
-                        <span
-                          className={
-                            beatFlash ? "text-rose-600" : "text-foreground"
-                          }
-                        >
-                          ♥
-                        </span>
-                        {snapshot.pulseBpm} bpm
-                      </span>
-                      <span>
-                        {snapshot.breathState === "inhaling"
-                          ? "↑ inhaling"
-                          : snapshot.breathState === "exhaling"
-                            ? "↓ exhaling"
-                            : "• steady"}
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-rose-600/90 w-full text-center">
-                      no face in frame
-                    </span>
-                  )}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Mochi Character + Minimal Status / Gift Letter */}
+        <div className="flex flex-col items-center justify-center w-full max-w-5xl mx-auto">
           <div className="flex flex-col items-center justify-center relative w-full max-w-[430px]">
             <ReactiveCharacter
               mood={storyStage === "alive" ? selectedMood : "dormant"}
@@ -751,7 +619,6 @@ export default function MochiPage() {
               }
             />
 
-            {/* ─── Seamless Minimal BPM + Red Vertical Bar Graph (Matching Reference) ─── */}
             <AnimatePresence mode="wait">
               {viewMode === "face" && cameraEnabled && !showNewspaperCard && (
                 <motion.div
@@ -762,9 +629,7 @@ export default function MochiPage() {
                   transition={{ duration: 0.25 }}
                   className="mt-18 sm:mt-24 w-full max-w-[340px] flex flex-col items-center select-none z-20"
                 >
-                  {/* Main BPM + Feathered Red Bar Waveform Row */}
                   <div className="w-full flex items-center justify-between gap-6 px-2">
-                    {/* Left: Bold BPM Readout */}
                     <div className="flex items-baseline shrink-0">
                       <span className="text-3xl sm:text-4xl font-semibold tracking-tight text-foreground tabular-nums">
                         {snapshot.facePresent && snapshot.pulseBpm > 0
@@ -783,7 +648,6 @@ export default function MochiPage() {
                       </span>
                     </div>
 
-                    {/* Right: Feathered Vertical Red Bars Waveform */}
                     <div
                       className="flex items-center justify-end gap-[3.5px] h-11 flex-1"
                       aria-hidden="true"
@@ -852,7 +716,6 @@ export default function MochiPage() {
                     </div>
                   </div>
 
-                  {/* Feature #1: Subtle 1-Line State Check-In */}
                   <div className="mt-1.5 text-center flex flex-col items-center gap-1">
                     {!snapshot.sdkBridgeConnected ? (
                       <p className="text-[11px] text-rose-600/90 font-medium">
@@ -884,7 +747,6 @@ export default function MochiPage() {
                       </p>
                     )}
 
-                    {/* Transparent Presage SmartSpectra SDK Runtime Badge */}
                     <div className="inline-flex items-center gap-1.5 text-[10px] font-mono tracking-wide text-muted-foreground/75">
                       <span
                         className={`w-1.5 h-1.5 rounded-full ${snapshot.sdkBridgeConnected
@@ -906,7 +768,6 @@ export default function MochiPage() {
               )}
             </AnimatePresence>
 
-            {/* Gentle Paced Breathing Prompt underneath Mochi */}
             <AnimatePresence mode="wait">
               {breatheWithMe && viewMode === "face" && (
                 <motion.div
@@ -927,7 +788,6 @@ export default function MochiPage() {
               )}
             </AnimatePresence>
 
-            {/* ─── "Breathe with me" Action Button ───────────────────── */}
             <AnimatePresence>
               {storyStage === "alive" &&
                 cameraEnabled &&
@@ -954,7 +814,6 @@ export default function MochiPage() {
                 )}
             </AnimatePresence>
 
-            {/* ─── Initial Load Onboarding (Warm Typography + Looped Arrow + Pill CTA) ─── */}
             <AnimatePresence>
               {showNewspaperCard && (
                 <motion.div
@@ -964,7 +823,6 @@ export default function MochiPage() {
                   transition={{ duration: 0.3, ease: "easeOut" }}
                   className="mt-2 flex flex-col items-center select-none z-20"
                 >
-                  {/* Warm Crimson Headline Copy (Matches Reference Typography) */}
                   <div className="text-left max-w-[260px] sm:max-w-[280px]">
                     <p className="text-[19px] sm:text-[22px] font-semibold leading-[1.28] tracking-tight text-[#7f1d1d]">
                       A daily pause for stillness.
@@ -973,7 +831,6 @@ export default function MochiPage() {
                     </p>
                   </div>
 
-                  {/* Hand-Drawn Looped Arrow Pointing Down to CTA */}
                   <div className="my-2 sm:my-3 pointer-events-none">
                     <svg
                       width="110"
@@ -1018,7 +875,6 @@ export default function MochiPage() {
                     </svg>
                   </div>
 
-                  {/* Sleek Floating Black Pill CTA Button */}
                   <button
                     type="button"
                     onClick={() => setShowConsentModal(true)}
@@ -1033,7 +889,6 @@ export default function MochiPage() {
         </div>
       </main>
 
-      {/* ─── Milestone Celebration Screen (Duolingo Flaming Comet Style) ─── */}
       <AnimatePresence>
         {showMilestone && milestoneData && (
           <MilestoneCelebration
@@ -1052,7 +907,6 @@ export default function MochiPage() {
         )}
       </AnimatePresence>
 
-      {/* ─── Multi-Step Consent & Transparency Modal (Challenge Rules Compliance) ─── */}
       <ConsentModal
         isOpen={showConsentModal}
         onClose={() => setShowConsentModal(false)}

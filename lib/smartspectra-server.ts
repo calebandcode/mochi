@@ -1,11 +1,3 @@
-/**
- * Server-side singleton manager for the native Presage `@smartspectra/node-sdk` (v3.5.0).
- *
- * Native SDK state is process-global, so storing the manager on `globalThis` guarantees
- * that `/api/smartspectra/stream` (SSE) and `/api/smartspectra/frame` (RGBA frame push)
- * share the exact same live SmartSpectraSDK instance.
- */
-
 export type PresageServerEvent =
   | {
       type: "status";
@@ -51,7 +43,6 @@ export type PresageServerEvent =
 
 type Listener = (event: PresageServerEvent) => void;
 
-// ExpressionType enum from @smartspectra/node-sdk/messages
 const EXPRESSION_NAMES: Record<number, string> = {
   0: "UNSPECIFIED",
   1: "ANGRY",
@@ -67,15 +58,12 @@ const EXPRESSION_NAMES: Record<number, string> = {
 interface SmartSpectraGlobalState {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sdk: any | null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pixelFormatRGBA: number;
   running: boolean;
   runtimeMode: "native-presage-sdk" | "serverless-fallback";
   sdkVersion: string;
   cameras: { id: string; name: string | null }[];
   activeMetrics: { breathing: number; cardio: number; face: number };
   lastError: string | null;
-  lastTimestampUs: number;
   listeners: Set<Listener>;
   stopTimer: ReturnType<typeof setTimeout> | null;
   initPromise: Promise<void> | null;
@@ -89,14 +77,12 @@ function getState(): SmartSpectraGlobalState {
   if (!globalRef.__mochiSmartSpectra) {
     globalRef.__mochiSmartSpectra = {
       sdk: null,
-      pixelFormatRGBA: 2, // PixelFormat.kRGBA
       running: false,
       runtimeMode: "serverless-fallback",
       sdkVersion: "3.5.0",
       cameras: [],
       activeMetrics: { breathing: 3, cardio: 3, face: 4 },
       lastError: null,
-      lastTimestampUs: 0,
       listeners: new Set(),
       stopTimer: null,
       initPromise: null,
@@ -110,9 +96,7 @@ function broadcast(event: PresageServerEvent) {
   for (const listener of state.listeners) {
     try {
       listener(event);
-    } catch {
-      // Ignore closed subscriber
-    }
+    } catch {}
   }
 }
 
@@ -123,9 +107,7 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
     state.stopTimer = null;
   }
 
-  if (state.running && state.sdk) {
-    return state;
-  }
+  if (state.running && state.sdk) return state;
 
   if (state.initPromise) {
     await state.initPromise;
@@ -149,7 +131,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
       const {
         SmartSpectraSDK,
         CameraSelection,
-        PixelFormat,
         ValidationCode,
         breathingMetrics,
         cardioMetrics,
@@ -158,7 +139,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
       const { decodeMetrics } = msgMod;
 
       state.sdkVersion = SmartSpectraSDK.version || "3.5.0";
-      state.pixelFormatRGBA = PixelFormat?.kRGBA ?? 2;
       state.activeMetrics = {
         breathing: breathingMetrics?.length ?? 3,
         cardio: cardioMetrics?.length ?? 3,
@@ -203,7 +183,9 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
           const noFaceCode = ValidationCode?.kNoFaceFound ?? 1;
           if (code !== lastValCode) {
             lastValCode = code;
-            console.log(`[SmartSpectra] validation code=${code} hint="${hint || "ok"}"`);
+            console.log(
+              `[SmartSpectra] validation code=${code} hint="${hint || "ok"}"`
+            );
           }
           broadcast({
             type: "validation",
@@ -220,7 +202,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
         try {
           const decoded = decodeMetrics(buf);
 
-          // 1. Cardio (Pulse Rate, Arterial Pressure Trace, HRV)
           const pulseRates = decoded.cardio?.pulseRate || [];
           const latestPulse =
             pulseRates.length > 0 ? pulseRates[pulseRates.length - 1] : null;
@@ -230,7 +211,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
           const hrvs = decoded.cardio?.hrv || [];
           const latestHrv = hrvs.length > 0 ? hrvs[hrvs.length - 1] : null;
 
-          // 2. Breathing (Rate & Upper Chest Trace)
           const breathRates = decoded.breathing?.rate || [];
           const latestBreathRate =
             breathRates.length > 0
@@ -240,14 +220,13 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
             .map((p) => Number(p.value ?? 0))
             .filter((n) => Number.isFinite(n));
 
-          // 3. Facial Expressions
           const exprs = decoded.face?.expression || [];
           const latestExpr = exprs.length > 0 ? exprs[exprs.length - 1] : null;
           let mappedExpression: "calm" | "grin" | "surprised" | null = null;
           let expressionLabel: string | null = null;
 
           if (latestExpr?.scores && latestExpr.scores.length > 0) {
-            let bestType = 6; // NEUTRAL
+            let bestType = 6;
             let bestConf = -1;
             for (const s of latestExpr.scores) {
               const conf = Number(s.confidence ?? 0);
@@ -267,7 +246,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
             }
           }
 
-          // 4. Facial Landmarks -> Center point
           const landmarksList = decoded.face?.landmarks || [];
           const latestLandmarks =
             landmarksList.length > 0
@@ -329,23 +307,21 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
             expressionLabel,
             landmarkCenter,
           });
-        } catch {
-          // Ignore malformed protobuf frame
-        }
+        } catch {}
       });
 
       sdk.on(
         "error",
         (code: number, message: string, retryable: boolean) => {
-          console.error(`[SmartSpectra] SDK error code=${code} retryable=${retryable}: ${message}`);
+          console.error(
+            `[SmartSpectra] SDK error code=${code} retryable=${retryable}: ${message}`
+          );
           state.lastError = message;
           state.running = false;
           broadcast({ type: "sdk_error", code, message, retryable });
         }
       );
 
-      // Capture directly from the native hardware camera at 30 FPS in C++
-      // (avoids HTTP frame serialization bottlenecks and guarantees steady 30 FPS for rPPG).
       sdk.useCamera(CameraSelection.default, {
         width: 640,
         height: 480,
@@ -357,7 +333,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
       state.running = true;
       state.runtimeMode = "native-presage-sdk";
       state.lastError = null;
-      state.lastTimestampUs = 0;
     } catch (err) {
       state.runtimeMode = "serverless-fallback";
       state.running = false;
@@ -382,7 +357,6 @@ export function subscribeSmartSpectra(listener: Listener): () => void {
   return () => {
     state.listeners.delete(listener);
     if (state.listeners.size === 0 && state.sdk) {
-      // Grace period before tearing down native pipeline on tab refresh
       state.stopTimer = setTimeout(async () => {
         if (state.listeners.size === 0 && state.sdk) {
           const instance = state.sdk;
@@ -398,36 +372,4 @@ export function subscribeSmartSpectra(listener: Listener): () => void {
       }, 2000);
     }
   };
-}
-
-export function pushSmartSpectraFrame(
-  rgbaBuffer: Buffer,
-  width: number,
-  height: number,
-  timestampUs: number
-): boolean {
-  const state = getState();
-  if (!state.running || !state.sdk) return false;
-
-  // Presage SDK requires strictly monotonically increasing timestamps in microseconds
-  const safeTs =
-    timestampUs > state.lastTimestampUs
-      ? timestampUs
-      : state.lastTimestampUs + 33333;
-  state.lastTimestampUs = safeTs;
-
-  try {
-    return Boolean(
-      state.sdk.sendFrame(
-        rgbaBuffer,
-        width,
-        height,
-        width * 4,
-        state.pixelFormatRGBA,
-        safeTs
-      )
-    );
-  } catch {
-    return false;
-  }
 }
