@@ -92,6 +92,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
   const smoothedHeadYRef = useRef(0);
   const latestPulseBpmRef = useRef(0);
   const latestFacePresentRef = useRef(false);
+  const lastLandmarkAtRef = useRef(0);
+  const validationFaceOkRef = useRef(true);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -109,6 +111,8 @@ export function useSmartSpectraCamera(enabled: boolean) {
     smoothedHeadYRef.current = 0;
     latestPulseBpmRef.current = 0;
     latestFacePresentRef.current = false;
+    lastLandmarkAtRef.current = 0;
+    validationFaceOkRef.current = true;
     setIsReady(false);
     setSnapshot(INITIAL_SNAPSHOT);
   }, []);
@@ -133,10 +137,6 @@ export function useSmartSpectraCamera(enabled: boolean) {
         if (payload.type === "status") {
           const isNative = payload.runtimeMode === "native-presage-sdk";
           nativeActiveRef.current = isNative;
-          if (isNative) {
-            setIsReady(true);
-            setError(null);
-          }
           setSnapshot((prev) => ({
             ...prev,
             sdkBridgeConnected: isNative,
@@ -162,21 +162,27 @@ export function useSmartSpectraCamera(enabled: boolean) {
           }));
         } else if (payload.type === "validation") {
           const faceOk = Boolean(payload.facePresent);
-          latestFacePresentRef.current = faceOk;
+          validationFaceOkRef.current = faceOk;
           if (!faceOk) {
+            latestFacePresentRef.current = false;
             latestPulseBpmRef.current = 0;
+            smoothedHeadXRef.current = 0;
+            smoothedHeadYRef.current = 0;
           }
           setSnapshot((prev) => ({
             ...prev,
-            facePresent: faceOk,
+            facePresent: faceOk && latestFacePresentRef.current,
             validationHint: payload.hint || "",
             ...(faceOk
               ? {}
               : {
+                  facePresent: false,
                   pulseBpm: 0,
                   breathingRateBpm: 0,
                   breathPhase: 0,
                   breathState: "steady" as BreathState,
+                  headX: 0,
+                  headY: 0,
                 }),
           }));
         } else if (payload.type === "sdk_error") {
@@ -235,67 +241,97 @@ export function useSmartSpectraCamera(enabled: boolean) {
           }
 
           // Derive headX / headY strictly from Presage face.landmarks
+          const hasLandmarks = Boolean(payload.landmarkCenter);
           if (payload.landmarkCenter) {
+            lastLandmarkAtRef.current = performance.now();
             const rawX = Number(payload.landmarkCenter.x);
             const rawY = Number(payload.landmarkCenter.y);
-            // Support either normalized [0..1] or 640x480 pixel coordinates
+            // Support normalized [0..1] or 640x480 pixel coordinates
             const normX = rawX > 1.5 ? rawX / 640 : rawX;
             const normY = rawY > 1.5 ? rawY / 480 : rawY;
-            const targetHeadX = Math.max(-1, Math.min(1, -(normX - 0.5) * 3.2));
-            const targetHeadY = Math.max(-1, Math.min(1, (normY - 0.45) * 3.0));
+            const targetHeadX = Math.max(-1, Math.min(1, -(normX - 0.5) * 3.6));
+            const targetHeadY = Math.max(-1, Math.min(1, (normY - 0.45) * 3.4));
             smoothedHeadXRef.current =
-              smoothedHeadXRef.current * 0.6 + targetHeadX * 0.4;
+              smoothedHeadXRef.current * 0.5 + targetHeadX * 0.5;
             smoothedHeadYRef.current =
-              smoothedHeadYRef.current * 0.6 + targetHeadY * 0.4;
+              smoothedHeadYRef.current * 0.5 + targetHeadY * 0.5;
           }
 
+          // Only mark facePresent=true if Presage has emitted actual 478-point face landmarks recently
+          // AND validationStatus hasn't reported kNoFaceFound.
+          const faceActiveNow =
+            validationFaceOkRef.current &&
+            (hasLandmarks ||
+              (lastLandmarkAtRef.current > 0 &&
+                performance.now() - lastLandmarkAtRef.current < 1200));
+
           const liveBpm =
-            typeof payload.pulseBpm === "number" && payload.pulseBpm > 30
+            faceActiveNow &&
+            typeof payload.pulseBpm === "number" &&
+            payload.pulseBpm > 30
               ? payload.pulseBpm
               : null;
           if (liveBpm !== null) {
             latestPulseBpmRef.current = liveBpm;
+          } else if (!faceActiveNow) {
+            latestPulseBpmRef.current = 0;
           }
-          latestFacePresentRef.current = true;
+          latestFacePresentRef.current = faceActiveNow;
 
           setSnapshot((prev) => ({
             ...prev,
-            facePresent: true,
-            pulseBpm: liveBpm !== null ? liveBpm : prev.pulseBpm,
-            pulseTrace: nextPulseTrace
-              ? [
-                  ...prev.pulseTrace.slice(
-                    Math.min(prev.pulseTrace.length, nextPulseTrace.length)
-                  ),
-                  ...nextPulseTrace,
-                ].slice(-36)
-              : prev.pulseTrace,
+            facePresent: faceActiveNow,
+            pulseBpm: !faceActiveNow
+              ? 0
+              : liveBpm !== null
+                ? liveBpm
+                : prev.pulseBpm,
+            pulseTrace: !faceActiveNow
+              ? Array(36).fill(0)
+              : nextPulseTrace
+                ? [
+                    ...prev.pulseTrace.slice(
+                      Math.min(prev.pulseTrace.length, nextPulseTrace.length)
+                    ),
+                    ...nextPulseTrace,
+                  ].slice(-36)
+                : prev.pulseTrace,
             hrvRmssd:
               typeof payload.hrvRmssd === "number"
                 ? Math.round(payload.hrvRmssd)
                 : prev.hrvRmssd,
-            breathingRateBpm:
-              typeof payload.breathingRateBpm === "number" &&
-              payload.breathingRateBpm > 0
+            breathingRateBpm: !faceActiveNow
+              ? 0
+              : typeof payload.breathingRateBpm === "number" &&
+                  payload.breathingRateBpm > 0
                 ? payload.breathingRateBpm
                 : prev.breathingRateBpm,
-            breathPhase:
-              nextBreathPhase !== null ? nextBreathPhase : prev.breathPhase,
-            breathState:
-              nextBreathState !== null ? nextBreathState : prev.breathState,
-            breathTrace: nextBreathTrace
-              ? [
-                  ...prev.breathTrace.slice(
-                    Math.min(prev.breathTrace.length, nextBreathTrace.length)
-                  ),
-                  ...nextBreathTrace,
-                ].slice(-36)
-              : prev.breathTrace,
-            expression:
-              (payload.expression as BiometricExpression | null) ??
-              prev.expression,
-            headX: smoothedHeadXRef.current,
-            headY: smoothedHeadYRef.current,
+            breathPhase: !faceActiveNow
+              ? 0
+              : nextBreathPhase !== null
+                ? nextBreathPhase
+                : prev.breathPhase,
+            breathState: !faceActiveNow
+              ? "steady"
+              : nextBreathState !== null
+                ? nextBreathState
+                : prev.breathState,
+            breathTrace: !faceActiveNow
+              ? Array(36).fill(0)
+              : nextBreathTrace
+                ? [
+                    ...prev.breathTrace.slice(
+                      Math.min(prev.breathTrace.length, nextBreathTrace.length)
+                    ),
+                    ...nextBreathTrace,
+                  ].slice(-36)
+                : prev.breathTrace,
+            expression: !faceActiveNow
+              ? "calm"
+              : ((payload.expression as BiometricExpression | null) ??
+                prev.expression),
+            headX: faceActiveNow ? smoothedHeadXRef.current : 0,
+            headY: faceActiveNow ? smoothedHeadYRef.current : 0,
           }));
         }
       } catch {
@@ -303,12 +339,36 @@ export function useSmartSpectraCamera(enabled: boolean) {
       }
     };
 
-    // 2. Heartbeat ripple animation loop driven strictly by live Presage SDK pulseBpm.
-    // Note: The native C++ SmartSpectraSDK captures the hardware camera directly at 30 FPS
-    // via `sdk.useCamera()`, so the browser does not open a competing `getUserMedia()` lock.
+    // 2. Heartbeat ripple & stale-face watchdog driven strictly by live Presage SDK events.
+    // The native C++ SmartSpectraSDK captures the hardware camera directly at 30 FPS via useCamera().
     const loop = () => {
       if (cancelled) return;
       const now = performance.now();
+
+      // If Presage hasn't detected 478-point face landmarks for >1.2s, drop facePresent immediately
+      if (
+        latestFacePresentRef.current &&
+        lastLandmarkAtRef.current > 0 &&
+        now - lastLandmarkAtRef.current > 1200
+      ) {
+        latestFacePresentRef.current = false;
+        latestPulseBpmRef.current = 0;
+        smoothedHeadXRef.current = 0;
+        smoothedHeadYRef.current = 0;
+        setSnapshot((prev) => ({
+          ...prev,
+          facePresent: false,
+          pulseBpm: 0,
+          breathingRateBpm: 0,
+          breathPhase: 0,
+          breathState: "steady",
+          pulseTrace: Array(36).fill(0),
+          breathTrace: Array(36).fill(0),
+          expression: "calm",
+          headX: 0,
+          headY: 0,
+        }));
+      }
 
       const liveBpm = latestPulseBpmRef.current;
       if (

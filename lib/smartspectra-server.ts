@@ -290,8 +290,11 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
           const nowMs = Date.now();
           if (nowMs - lastMetricLogMs >= 2000) {
             lastMetricLogMs = nowMs;
+            const lmStr = landmarkCenter
+              ? `${latestLandmarks?.value?.length ?? 0} (${landmarkCenter.x.toFixed(1)},${landmarkCenter.y.toFixed(1)})`
+              : "0";
             console.log(
-              `[SmartSpectra] pulse=${latestPulse ? Math.round(Number(latestPulse.value)) : "--"}bpm | breath=${latestBreathRate ? Math.round(Number(latestBreathRate.value)) : "--"}br/m | trace=${pulseTrace.length}/${breathingTrace.length} | expr=${expressionLabel ?? "--"} | lm=${latestLandmarks?.value?.length ?? 0}`
+              `[SmartSpectra] pulse=${latestPulse ? Math.round(Number(latestPulse.value)) : "--"}bpm | breath=${latestBreathRate ? Math.round(Number(latestBreathRate.value)) : "--"}br/m | trace=${pulseTrace.length}/${breathingTrace.length} | expr=${expressionLabel ?? "--"} | lm=${lmStr}`
             );
           }
 
