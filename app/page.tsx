@@ -816,10 +816,19 @@ export default function MochiPage() {
 
                   {/* Feature #1: Subtle 1-Line State Check-In */}
                   <div className="mt-1.5 text-center flex flex-col items-center gap-1">
-                    {!snapshot.facePresent ? (
+                    {!snapshot.sdkBridgeConnected ? (
+                      <p className="text-[11px] text-rose-600/90 font-medium">
+                        {snapshot.sdkError ||
+                          "Presage SmartSpectra SDK not connected — add SMARTSPECTRA_API_KEY to .env.local"}
+                      </p>
+                    ) : !snapshot.facePresent ? (
                       <p className="text-[11px] text-rose-600/90 font-medium">
                         {snapshot.validationHint ||
                           "Step in front of the camera so Mochi can feel your pulse"}
+                      </p>
+                    ) : snapshot.pulseBpm === 0 ? (
+                      <p className="text-[11px] text-muted-foreground">
+                        Calibrating live pulse with Presage SmartSpectra SDK...
                       </p>
                     ) : storyStage === "awakening" ? (
                       <p className="text-[11px] text-muted-foreground">
@@ -829,10 +838,10 @@ export default function MochiPage() {
                     ) : breatheWithMe ? null : (
                       <p className="text-[11px] text-muted-foreground">
                         {snapshot.pulseBpm >= 76
-                          ? `A little rushed (${snapshot.breathingRateBpm} br/min) · ready for your daily stillness`
+                          ? `A little rushed (${snapshot.breathingRateBpm || "--"} br/min) · ready for your daily stillness`
                           : snapshot.pulseBpm <= 68
-                            ? `Calm & still · ${snapshot.breathingRateBpm} br/min`
-                            : `Steady rhythm · ${snapshot.breathingRateBpm} br/min · tap to pause`}
+                            ? `Calm & still · ${snapshot.breathingRateBpm || "--"} br/min`
+                            : `Steady rhythm · ${snapshot.breathingRateBpm || "--"} br/min · tap to pause`}
                       </p>
                     )}
 
@@ -842,7 +851,7 @@ export default function MochiPage() {
                         className={`w-1.5 h-1.5 rounded-full ${
                           snapshot.sdkBridgeConnected
                             ? "bg-emerald-500 animate-pulse"
-                            : "bg-amber-400"
+                            : "bg-rose-500"
                         }`}
                       />
                       <span>
@@ -852,7 +861,7 @@ export default function MochiPage() {
                                 ? ` · HRV ${snapshot.hrvRmssd}ms`
                                 : ""
                             }`
-                          : "Browser Preview Mode (run locally with API key for live SDK)"}
+                          : "Presage SmartSpectra SDK disconnected (API key required)"}
                       </span>
                     </div>
                   </div>
