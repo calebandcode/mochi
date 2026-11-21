@@ -1,55 +1,34 @@
 import { NextRequest } from "next/server";
+import {
+  ensureSmartSpectraStarted,
+  subscribeSmartSpectra,
+  type PresageServerEvent,
+} from "@/lib/smartspectra-server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * Presage SmartSpectra SDK v3.5.0 Server-Sent Events (SSE) Telemetry Endpoint.
+ * Presage SmartSpectra SDK v3.5.0 Server-Sent Events (SSE) Live Metrics Stream.
  *
- * Verifies `process.env.SMARTSPECTRA_API_KEY` from `.env.local`, queries the native
- * `@smartspectra/node-sdk` runtime when available, and gracefully falls back in serverless
- * environments (e.g. Vercel Lambda without GLIBC 2.35) so client-side optical rPPG continues seamlessly.
+ * Starts the native `@smartspectra/node-sdk` pipeline in custom-input mode using
+ * `process.env.SMARTSPECTRA_API_KEY`, and streams live decoded Presage protobuf
+ * metrics (`cardio.pulseRate`, `cardio.arterialPressureTrace`, `breathing.rate`,
+ * `breathing.upperTrace`, `face.expression`, `face.landmarks`, `validationStatus`)
+ * directly to the Mochi client.
  */
 export async function GET(req: NextRequest) {
-  const apiKey = process.env.SMARTSPECTRA_API_KEY;
-  const hasApiKey = Boolean(apiKey && apiKey.trim().length > 0);
+  const apiKey = process.env.SMARTSPECTRA_API_KEY?.trim() || "";
+  const hasApiKey = apiKey.length > 0;
 
-  let sdkVersion = "3.5.0";
-  let cameras: { id: string; name: string }[] = [];
-  let metrics = { breathing: 3, cardio: 3, face: 2 };
-  let isNativeLoaded = false;
-
-  try {
-    const sdk = await import("@smartspectra/node-sdk");
-    if (sdk && sdk.SmartSpectraSDK) {
-      sdkVersion = sdk.SmartSpectraSDK.version || "3.5.0";
-      try {
-        cameras = (sdk.SmartSpectraSDK.availableCameras?.() || []) as {
-          id: string;
-          name: string;
-        }[];
-      } catch {
-        cameras = [];
-      }
-      metrics = {
-        breathing: sdk.breathingMetrics?.length ?? 3,
-        cardio: sdk.cardioMetrics?.length ?? 3,
-        face: sdk.faceMetrics?.length ?? 2,
-      };
-      isNativeLoaded = true;
-    }
-  } catch {
-    // Native shared library (.so) not supported on target OS (e.g. Amazon Linux on Vercel)
-    isNativeLoaded = false;
-  }
-
+  const state = await ensureSmartSpectraStarted();
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
-    async start(controller) {
+    start(controller) {
       let closed = false;
 
-      const sendEvent = (data: Record<string, unknown>) => {
+      const sendEvent = (data: PresageServerEvent | Record<string, unknown>) => {
         if (closed) return;
         try {
           controller.enqueue(
@@ -60,16 +39,22 @@ export async function GET(req: NextRequest) {
         }
       };
 
+      // Send immediate runtime status handshake
       sendEvent({
         type: "status",
         apiKeyConfigured: hasApiKey,
-        sdkVersion,
-        cameras,
-        activeMetrics: metrics,
-        runtimeMode: isNativeLoaded ? "native-c-sdk" : "client-optical-rppg",
+        sdkVersion: state.sdkVersion,
+        cameras: state.cameras,
+        activeMetrics: state.activeMetrics,
+        runtimeMode: state.runtimeMode,
+        error: state.lastError ?? undefined,
       });
 
-      // Keep SSE connection alive while client is connected
+      // Subscribe to real-time decoded Presage SDK metrics & validation events
+      const unsubscribe = subscribeSmartSpectra((event) => {
+        sendEvent(event);
+      });
+
       const heartbeatTimer = setInterval(() => {
         if (closed) return;
         sendEvent({
@@ -81,6 +66,7 @@ export async function GET(req: NextRequest) {
       req.signal.addEventListener("abort", () => {
         closed = true;
         clearInterval(heartbeatTimer);
+        unsubscribe();
         try {
           controller.close();
         } catch {}

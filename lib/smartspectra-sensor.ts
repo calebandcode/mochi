@@ -29,8 +29,14 @@ export interface SmartSpectraSnapshot {
   /** Face centroid offset (-1 to +1) so Mochi softly looks toward the user */
   headX: number;
   headY: number;
-  /** True if connected to Presage SmartSpectra backend stream */
+  /** True if connected to live native Presage SmartSpectra SDK backend */
   sdkBridgeConnected: boolean;
+  /** Active runtime mode reported by /api/smartspectra/stream */
+  runtimeMode: "native-presage-sdk" | "serverless-fallback" | "connecting";
+  /** Latest validation hint from Presage SDK (e.g. "No face found", "Too dark") */
+  validationHint: string;
+  /** Latest HRV RMSSD (ms) from Presage cardio.hrv when available */
+  hrvRmssd: number | null;
   /** Native @smartspectra/node-sdk version reported by backend */
   sdkVersion: string;
   /** Hardware camera name reported by @smartspectra/node-sdk */
@@ -66,8 +72,36 @@ export function useSmartSpectraCamera(enabled: boolean) {
     headX: 0,
     headY: 0,
     sdkBridgeConnected: false,
+    runtimeMode: "connecting",
+    validationHint: "",
+    hrvRmssd: null,
     sdkVersion: "3.5.0",
     cameraName: "Webcam",
+  });
+
+  // Live metrics pushed from the native Presage @smartspectra/node-sdk backend via SSE
+  const presageLiveRef = useRef<{
+    nativeActive: boolean;
+    lastMetricsAt: number;
+    facePresent: boolean | null;
+    pulseBpm: number | null;
+    pulseTrace: number[];
+    hrvRmssd: number | null;
+    breathingRateBpm: number | null;
+    breathingPhase: number | null;
+    expression: BiometricExpression | null;
+    validationHint: string;
+  }>({
+    nativeActive: false,
+    lastMetricsAt: 0,
+    facePresent: null,
+    pulseBpm: null,
+    pulseTrace: [],
+    hrvRmssd: null,
+    breathingRateBpm: null,
+    breathingPhase: null,
+    expression: null,
+    validationHint: "",
   });
 
   // In-memory signal buffers (wiped immediately when camera stops)
@@ -101,12 +135,19 @@ export function useSmartSpectraCamera(enabled: boolean) {
     mouthDarkRatio: number;
     mouthBrightRatio: number;
     mouthAspect: number;
+    lipContrast: number;
+    eyeDarkRatio: number;
   }>({
     samples: 0,
     mouthDarkRatio: 0.08,
     mouthBrightRatio: 0.12,
     mouthAspect: 1.0,
+    lipContrast: 5.5,
+    eyeDarkRatio: 0.14,
   });
+
+  const lastFaceCentroidRef = useRef<{ x: number; y: number } | null>(null);
+  const recentMotionHistoryRef = useRef<number[]>([]);
 
   const expressionHoldRef = useRef<{
     expr: BiometricExpression;
@@ -145,7 +186,11 @@ export function useSmartSpectraCamera(enabled: boolean) {
       mouthDarkRatio: 0.08,
       mouthBrightRatio: 0.12,
       mouthAspect: 1.0,
+      lipContrast: 5.5,
+      eyeDarkRatio: 0.14,
     };
+    lastFaceCentroidRef.current = null;
+    recentMotionHistoryRef.current = [];
     setIsReady(false);
     setSnapshot((prev) => ({
       ...prev,
@@ -174,15 +219,66 @@ export function useSmartSpectraCamera(enabled: boolean) {
         try {
           const payload = JSON.parse(event.data);
           if (payload.type === "status") {
+            const isNative = payload.runtimeMode === "native-presage-sdk";
+            presageLiveRef.current.nativeActive = isNative;
             setSnapshot((prev) => ({
               ...prev,
-              sdkBridgeConnected: Boolean(payload.apiKeyConfigured),
+              sdkBridgeConnected: isNative,
+              runtimeMode: payload.runtimeMode || "serverless-fallback",
               sdkVersion: payload.sdkVersion || prev.sdkVersion,
               cameraName:
                 Array.isArray(payload.cameras) && payload.cameras[0]?.name
                   ? payload.cameras[0].name
                   : prev.cameraName,
             }));
+          } else if (payload.type === "validation") {
+            presageLiveRef.current.facePresent = Boolean(payload.facePresent);
+            presageLiveRef.current.validationHint = payload.hint || "";
+          } else if (payload.type === "metrics") {
+            const live = presageLiveRef.current;
+            live.lastMetricsAt = performance.now();
+            if (typeof payload.pulseBpm === "number" && payload.pulseBpm > 30) {
+              live.pulseBpm = payload.pulseBpm;
+            }
+            if (Array.isArray(payload.pulseTrace) && payload.pulseTrace.length > 0) {
+              const mean =
+                payload.pulseTrace.reduce((a: number, b: number) => a + b, 0) /
+                payload.pulseTrace.length;
+              const maxAbs = Math.max(
+                0.001,
+                ...payload.pulseTrace.map((v: number) => Math.abs(v - mean))
+              );
+              live.pulseTrace = payload.pulseTrace.map((v: number) =>
+                Math.max(-1, Math.min(1, (v - mean) / maxAbs))
+              );
+            }
+            if (typeof payload.hrvRmssd === "number") {
+              live.hrvRmssd = Math.round(payload.hrvRmssd);
+            }
+            if (
+              typeof payload.breathingRateBpm === "number" &&
+              payload.breathingRateBpm > 0
+            ) {
+              live.breathingRateBpm = payload.breathingRateBpm;
+            }
+            if (
+              Array.isArray(payload.breathingTrace) &&
+              payload.breathingTrace.length > 0
+            ) {
+              const bt = payload.breathingTrace as number[];
+              const bMean = bt.reduce((a, b) => a + b, 0) / bt.length;
+              const bMax = Math.max(
+                0.001,
+                ...bt.map((v) => Math.abs(v - bMean))
+              );
+              live.breathingPhase = Math.max(
+                -1,
+                Math.min(1, (bt[bt.length - 1] - bMean) / bMax)
+              );
+            }
+            if (payload.expression) {
+              live.expression = payload.expression as BiometricExpression;
+            }
           }
         } catch {
           // Ignore malformed packet
@@ -230,6 +326,17 @@ export function useSmartSpectraCamera(enabled: boolean) {
         canvas.height = H;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
+        // Dedicated 320x240 RGBA capture canvas for streaming live frames into native Presage SmartSpectraSDK.sendFrame()
+        const sdkCanvas = document.createElement("canvas");
+        const SDK_W = 320;
+        const SDK_H = 240;
+        sdkCanvas.width = SDK_W;
+        sdkCanvas.height = SDK_H;
+        const sdkCtx = sdkCanvas.getContext("2d", { willReadFrequently: true });
+        let lastSdkPushMs = 0;
+        let sdkPushInFlight = false;
+        let lastSdkTsUs = 0;
+
         // Optional Chromium native FaceDetector if supported by the browser
         type NativeFaceDetector = {
           detect: (
@@ -265,6 +372,38 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
           const video = videoRef.current;
           if (ctx && video && video.readyState >= 2) {
+            // Stream live 320x240 RGBA frames into the native Presage SmartSpectra SDK (~20 fps)
+            if (
+              presageLiveRef.current.nativeActive &&
+              sdkCtx &&
+              !sdkPushInFlight &&
+              now - lastSdkPushMs >= 50
+            ) {
+              lastSdkPushMs = now;
+              sdkPushInFlight = true;
+              sdkCtx.drawImage(video, 0, 0, SDK_W, SDK_H);
+              const rgbaBytes = sdkCtx.getImageData(0, 0, SDK_W, SDK_H).data;
+              const tsUs = Math.max(
+                lastSdkTsUs + 33333,
+                Math.round(now * 1000)
+              );
+              lastSdkTsUs = tsUs;
+              fetch("/api/smartspectra/frame", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/octet-stream",
+                  "x-frame-width": String(SDK_W),
+                  "x-frame-height": String(SDK_H),
+                  "x-frame-ts": String(tsUs),
+                },
+                body: rgbaBytes,
+              })
+                .catch(() => {})
+                .finally(() => {
+                  sdkPushInFlight = false;
+                });
+            }
+
             // Query native FaceDetector every ~160ms if available
             if (nativeDetector && now - lastNativeCheck > 160) {
               lastNativeCheck = now;
@@ -278,7 +417,10 @@ export function useSmartSpectraCamera(enabled: boolean) {
                       nativeFaceBox = { x: b.x, y: b.y, width: b.width, height: b.height };
                     }
                   } else {
-                    nativeFaceResult = false;
+                    // Note: On Windows/Linux, `window.FaceDetector` exists in Chromium but its OS backend
+                    // is unimplemented and always resolves to `[]`. Treat empty array as inconclusive (`null`)
+                    // so our optical skin + feature + motion detector can always detect the user's face!
+                    nativeFaceResult = null;
                     nativeFaceBox = null;
                   }
                 })
@@ -293,16 +435,16 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             const currentLuma = new Float32Array(W * H);
 
-            // --- 1. Spatial Grid Face Box Locator (Skin + Facial Feature Contrast + Motion) ---
+            // --- 1. Spatial Grid Face Box Locator (Skin + Facial Feature Contrast + Living Motion) ---
             const GW = 32; // 128 / 4
             const GH = 24; // 96 / 4
             const skinGrid = new Float32Array(GW * GH);
             const featGrid = new Float32Array(GW * GH);
             const motGrid = new Float32Array(GW * GH);
+            const lumaGrid = new Float32Array(GW * GH);
 
-            let outerSkinCount = 0;
-            let outerTotal = 0;
             let frameDiffSum = 0;
+            let activeMotionPixels = 0;
             const prevLuma = prevFrameLumaRef.current;
 
             // First pass: compute luminance
@@ -314,7 +456,7 @@ export function useSmartSpectraCamera(enabled: boolean) {
                 0.114 * frame[idx + 2];
             }
 
-            // Second pass: populate 32x24 spatial cells with skin, facial feature edges, and motion
+            // Second pass: populate 32x24 spatial cells with skin, facial feature edges, luma, and motion
             for (let y = 3; y < H - 3; y++) {
               const gy = y >> 2;
               for (let x = 3; x < W - 3; x++) {
@@ -327,36 +469,34 @@ export function useSmartSpectraCamera(enabled: boolean) {
                 const g = frame[idx + 1];
                 const b = frame[idx + 2];
                 const luma = currentLuma[pIdx];
+                lumaGrid[cellIdx] += luma / 16;
 
-                // YCbCr chrominance human skin test (rejects white/grey walls, dark rooms, etc.)
+                // Inclusive YCbCr + RGB skin test across Fitzpatrick I-VI & cool/warm webcam white balance
                 const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
                 const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+                const maxC = Math.max(r, g, b);
+                const minC = Math.min(r, g, b);
 
                 const isHumanSkin =
-                  luma > 32 &&
-                  luma < 238 &&
-                  r > 52 &&
-                  g > 32 &&
-                  b > 18 &&
-                  r > g &&
-                  r > b + 8 &&
-                  cb >= 74 &&
-                  cb <= 129 &&
-                  cr >= 131 &&
-                  cr <= 176;
+                  luma > 22 &&
+                  luma < 246 &&
+                  r > 36 &&
+                  g > 22 &&
+                  b > 12 &&
+                  r >= g - 3 &&
+                  r >= b &&
+                  maxC - minC >= 6 &&
+                  (r - b >= 6 || cr >= 127) &&
+                  cb >= 70 &&
+                  cb <= 135 &&
+                  cr >= 127 &&
+                  cr <= 182;
 
                 if (isHumanSkin) {
                   skinGrid[cellIdx] += 1;
                 }
 
-                if (x < 14 || x > W - 14 || y < 8) {
-                  outerTotal++;
-                  if (isHumanSkin) {
-                    outerSkinCount++;
-                  }
-                }
-
-                // Internal facial feature edges (eyes, brows, nostrils, mouth)
+                // Internal facial feature edges (eyes, brows, nostrils, mouth, glasses)
                 const vGrad = Math.abs(luma - currentLuma[(y - 2) * W + x]);
                 const hGrad = Math.abs(luma - currentLuma[y * W + (x - 2)]);
                 const edgeVal = vGrad * 0.7 + hGrad * 0.3;
@@ -364,12 +504,13 @@ export function useSmartSpectraCamera(enabled: boolean) {
                   featGrid[cellIdx] += edgeVal;
                 }
 
-                // Temporal motion
+                // Temporal motion (above webcam sensor noise floor)
                 if (prevLuma) {
                   const mDiff = Math.abs(luma - prevLuma[pIdx]);
                   frameDiffSum += mDiff;
                   if (mDiff > 3.2) {
                     motGrid[cellIdx] += mDiff;
+                    activeMotionPixels++;
                   }
                 }
               }
@@ -377,20 +518,21 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             prevFrameLumaRef.current = currentLuma;
             const avgFrameMotion = frameDiffSum / (W * H);
-            const outerSkinRatio =
-              outerTotal > 0 ? outerSkinCount / outerTotal : 0;
 
-            // Locate the 7x9 cell (28x36px = 1008px) Face Bounding Window across the frame
+            // Locate the best 7x9 cell (28x36px) Face Candidate Window:
             let bestScore = -1;
             let bestGx = GW / 2;
-            let bestGy = GH * 0.42;
+            let bestGy = Math.round(GH * 0.42);
             let bestWinSkin = 0;
             let bestWinFeat = 0;
+            let bestWinMot = 0;
+            let bestHeadContrast = 1;
 
-            const prevGx = (W / 2 - smoothedHeadXRef.current * (W * 0.21)) / 4;
-            const prevGy = (H * 0.42 + smoothedHeadYRef.current * (H * 0.19)) / 4;
+            const prevCentroid = lastFaceCentroidRef.current;
+            const prevGx = prevCentroid ? prevCentroid.x / 4 : GW / 2;
+            const prevGy = prevCentroid ? prevCentroid.y / 4 : GH * 0.42;
 
-            for (let gy = 4; gy <= GH - 6; gy++) {
+            for (let gy = 4; gy <= GH - 5; gy++) {
               for (let gx = 3; gx <= GW - 4; gx++) {
                 let winSkin = 0;
                 let winFeat = 0;
@@ -406,15 +548,52 @@ export function useSmartSpectraCamera(enabled: boolean) {
                   }
                 }
 
-                // Candidate head window must contain actual skin AND facial feature edges
-                if (winSkin < 90 || winFeat < 140) continue;
+                // Require reasonable skin presence + facial feature contrast inside the candidate head box
+                if (winSkin < 32 || winFeat < 95) continue;
+
+                // Upper-half (eyes/brows) and lower-half (nose/mouth) feature presence
+                let upperFeat = 0;
+                let lowerFeat = 0;
+                for (let dy = -3; dy <= -1; dy++) {
+                  const rowOffset = (gy + dy) * GW;
+                  for (let dx = -2; dx <= 2; dx++) {
+                    upperFeat += featGrid[rowOffset + (gx + dx)];
+                  }
+                }
+                for (let dy = 1; dy <= 3; dy++) {
+                  const rowOffset = (gy + dy) * GW;
+                  for (let dx = -2; dx <= 2; dx++) {
+                    lowerFeat += featGrid[rowOffset + (gx + dx)];
+                  }
+                }
+                if (upperFeat < 18 || lowerFeat < 14) continue;
+
+                // Surround check: compare skin density inside head window vs far left/right edges of frame
+                let outerSkin = 0;
+                let outerCells = 0;
+                for (let dy = -4; dy <= 4; dy++) {
+                  const ry = gy + dy;
+                  if (ry < 1 || ry >= GH - 1) continue;
+                  for (const dx of [-6, -5, 5, 6]) {
+                    const rx = gx + dx;
+                    if (rx < 1 || rx >= GW - 1) continue;
+                    outerSkin += skinGrid[ry * GW + rx];
+                    outerCells++;
+                  }
+                }
+                const innerSkinDensity = winSkin / 63;
+                const outerSkinDensity = outerCells > 0 ? outerSkin / outerCells : 0;
+                const headContrastRatio =
+                  (innerSkinDensity + 1.0) / (outerSkinDensity + 1.0);
 
                 const distFromPrev = Math.hypot(gx - prevGx, gy - prevGy);
-                const continuityBonus = Math.max(0.7, 1.15 - distFromPrev * 0.03);
+                const continuityBonus = Math.max(0.7, 1.18 - distFromPrev * 0.03);
+
                 const score =
-                  winSkin *
+                  (winSkin + 20) *
                   winFeat *
-                  (1 + Math.min(3.0, winMot / 150)) *
+                  Math.min(2.4, Math.max(0.7, headContrastRatio)) *
+                  (1 + Math.min(3.5, winMot / 85)) *
                   continuityBonus;
 
                 if (score > bestScore) {
@@ -423,119 +602,64 @@ export function useSmartSpectraCamera(enabled: boolean) {
                   bestGy = gy;
                   bestWinSkin = winSkin;
                   bestWinFeat = winFeat;
+                  bestWinMot = winMot;
+                  bestHeadContrast = headContrastRatio;
                 }
               }
             }
 
-            let faceCenterX = bestGx * 4;
-            let faceCenterY = bestGy * 4;
-
-            if (nativeFaceBox && video.videoWidth > 0 && video.videoHeight > 0) {
-              faceCenterX =
-                ((nativeFaceBox.x + nativeFaceBox.width / 2) / video.videoWidth) * W;
-              faceCenterY =
-                ((nativeFaceBox.y + nativeFaceBox.height / 2) / video.videoHeight) * H;
-            } else if (bestScore > 0) {
-              const boxX0 = Math.max(4, Math.round(bestGx * 4 - 18));
-              const boxX1 = Math.min(W - 4, Math.round(bestGx * 4 + 18));
-              const boxY0 = Math.max(4, Math.round(bestGy * 4 - 20));
-              const boxY1 = Math.min(H - 6, Math.round(bestGy * 4 + 20));
-
-              let weightedX = 0;
-              let weightedY = 0;
-              let totalWeight = 0;
-
-              for (let y = boxY0; y < boxY1; y++) {
-                const gy = y >> 2;
-                for (let x = boxX0; x < boxX1; x++) {
-                  const gx = x >> 2;
-                  const cIdx = gy * GW + gx;
-                  const w =
-                    skinGrid[cIdx] * 1.6 +
-                    featGrid[cIdx] * 0.1 +
-                    motGrid[cIdx] * 0.25;
-                  if (w > 0) {
-                    weightedX += x * w;
-                    weightedY += y * w;
-                    totalWeight += w;
-                  }
-                }
-              }
-
-              if (totalWeight > 0) {
-                faceCenterX = weightedX / totalWeight;
-                faceCenterY = weightedY / totalWeight;
-              }
+            // Track rolling ~2.5-second micro-motion inside the candidate face box
+            // Even when sitting still, a living person has subtle breathing/head micro-motion,
+            // whereas an empty room or background wall has zero localized motion.
+            recentMotionHistoryRef.current.push(bestWinMot);
+            if (recentMotionHistoryRef.current.length > 75) {
+              recentMotionHistoryRef.current.shift();
             }
+            const recentMaxWinMotion = recentMotionHistoryRef.current.reduce(
+              (max, v) => (v > max ? v : max),
+              0
+            );
+            const hasLivingMicroMotion =
+              recentMaxWinMotion > 10 || activeMotionPixels >= 10;
 
-            // Sample optical green channel & internal dark spots (eyes/brows/mouth) inside the candidate face ROI
-            let greenSum = 0;
-            let lumaSum = 0;
-            let roiPixels = 0;
-            const roiX0 = Math.max(8, Math.round(faceCenterX - 20));
-            const roiX1 = Math.min(W - 8, Math.round(faceCenterX + 20));
-            const roiY0 = Math.max(6, Math.round(faceCenterY - 18));
-            const roiY1 = Math.min(H - 12, Math.round(faceCenterY + 18));
-
-            for (let ry = roiY0; ry < roiY1; ry++) {
-              for (let rx = roiX0; rx < roiX1; rx++) {
-                const idx = (ry * W + rx) * 4;
-                greenSum += frame[idx + 1];
-                lumaSum += currentLuma[ry * W + rx];
-                roiPixels++;
-              }
-            }
-            const avgFaceLuma = roiPixels > 0 ? lumaSum / roiPixels : 128;
-            const avgGreen = roiPixels > 0 ? greenSum / roiPixels : 128;
-
-            let featureDarkSpots = 0;
-            for (let ry = roiY0; ry < roiY1; ry++) {
-              for (let rx = roiX0; rx < roiX1; rx++) {
-                if (currentLuma[ry * W + rx] < avgFaceLuma * 0.72) {
-                  featureDarkSpots++;
-                }
-              }
-            }
-
-            const winPixels = 7 * 9 * 16; // 1008 pixels in 7x9 grid window
-            const winSkinRatio = bestWinSkin / winPixels;
-            const avgBoxFeat = bestWinFeat / winPixels;
-            const darkFeatureRatio =
-              roiPixels > 0 ? featureDarkSpots / roiPixels : 0;
-
-            // Strict human face verification inside the tracked head box:
-            // 1. Concentred skin inside the head box (at least 22%)
-            // 2. Head box has significantly more skin than the outer room border (rejects beige/wood walls)
-            // 3. Real facial feature contrast (eyes, eyebrows, nose, mouth) and dark feature spots
-            const heuristicFaceDetected =
-              bestScore > 0 &&
-              winSkinRatio >= 0.22 &&
-              (winSkinRatio > outerSkinRatio * 1.4 || avgBoxFeat > 6.5) &&
-              avgBoxFeat >= 1.6 &&
-              darkFeatureRatio >= 0.028 &&
-              darkFeatureRatio <= 0.44 &&
-              avgFaceLuma > 32 &&
-              avgFaceLuma < 238 &&
-              avgFrameMotion < 28;
-
-            // If browser supports hardware FaceDetector (nativeFaceResult !== null), respect its false verdict!
+            // Determine if a human face is present:
+            // Either native detector found a face, OR our candidate head box has skin + features +
+            // either clear separation from background walls (bestHeadContrast >= 1.15) or live micro-motion.
             const rawFaceDetected =
-              nativeFaceResult !== null
-                ? nativeFaceResult && winSkinRatio >= 0.12
-                : heuristicFaceDetected;
+              nativeFaceResult === true ||
+              (bestScore > 0 &&
+                bestWinSkin >= 36 &&
+                bestWinFeat >= 110 &&
+                (bestHeadContrast >= 1.15 || recentMaxWinMotion > 28) &&
+                hasLivingMicroMotion &&
+                avgFrameMotion < 45);
 
-            faceConfidenceRef.current =
-              faceConfidenceRef.current * 0.72 + (rawFaceDetected ? 0.28 : 0);
-            const facePresent = faceConfidenceRef.current >= 0.45;
+            // Fast lock-on when face enters frame (~2 frames), smooth release when stepping out (~1s)
+            if (rawFaceDetected) {
+              faceConfidenceRef.current = Math.min(
+                1,
+                faceConfidenceRef.current * 0.55 + 0.45
+              );
+            } else {
+              faceConfidenceRef.current = faceConfidenceRef.current * 0.72;
+            }
+            const facePresent = faceConfidenceRef.current >= 0.32;
 
             if (!facePresent) {
-              // No face in view -> decay head gaze, stop heartbeats, and decay breathing
-              smoothedHeadXRef.current *= 0.82;
-              smoothedHeadYRef.current *= 0.82;
-              smoothedBreathRef.current *= 0.82;
+              // No face in view -> clear buffers, decay head gaze, stop heartbeats, and reset breathing
+              lastFaceCentroidRef.current = null;
+              greenSignalBuffer.current = [];
+              breathSignalBuffer.current = [];
+              pulseTraceRef.current = pulseTraceRef.current.map((v) =>
+                Math.abs(v) < 0.02 ? 0 : v * 0.75
+              );
+              smoothedHeadXRef.current *= 0.8;
+              smoothedHeadYRef.current *= 0.8;
+              smoothedBreathRef.current *= 0.8;
               setSnapshot((prev) => ({
                 ...prev,
                 facePresent: false,
+                pulseTrace: pulseTraceRef.current,
                 headX:
                   Math.abs(smoothedHeadXRef.current) < 0.01
                     ? 0
@@ -557,23 +681,89 @@ export function useSmartSpectraCamera(enabled: boolean) {
               return;
             }
 
+            // Locate precise sub-grid face centroid
+            let faceCenterX = W / 2;
+            let faceCenterY = H * 0.42;
+
+            if (nativeFaceBox && video.videoWidth > 0 && video.videoHeight > 0) {
+              faceCenterX =
+                ((nativeFaceBox.x + nativeFaceBox.width / 2) / video.videoWidth) * W;
+              faceCenterY =
+                ((nativeFaceBox.y + nativeFaceBox.height / 2) / video.videoHeight) * H;
+            } else {
+              const boxX0 = Math.max(4, Math.round(bestGx * 4 - 20));
+              const boxX1 = Math.min(W - 4, Math.round(bestGx * 4 + 20));
+              const boxY0 = Math.max(4, Math.round(bestGy * 4 - 22));
+              const boxY1 = Math.min(H - 6, Math.round(bestGy * 4 + 22));
+
+              let weightedX = 0;
+              let weightedY = 0;
+              let totalWeight = 0;
+
+              for (let y = boxY0; y < boxY1; y++) {
+                const gy = y >> 2;
+                for (let x = boxX0; x < boxX1; x++) {
+                  const gx = x >> 2;
+                  const cIdx = gy * GW + gx;
+                  const w =
+                    skinGrid[cIdx] * 1.6 +
+                    featGrid[cIdx] * 0.16 +
+                    motGrid[cIdx] * 0.35;
+                  if (w > 0) {
+                    weightedX += x * w;
+                    weightedY += y * w;
+                    totalWeight += w;
+                  }
+                }
+              }
+
+              if (totalWeight > 0) {
+                faceCenterX = weightedX / totalWeight;
+                faceCenterY = weightedY / totalWeight;
+              } else {
+                faceCenterX = bestGx * 4;
+                faceCenterY = bestGy * 4;
+              }
+            }
+
+            lastFaceCentroidRef.current = { x: faceCenterX, y: faceCenterY };
+
             // Head offset:
-            // Moving head to right of user (left in raw webcam) -> positive headX
-            // Moving head to left of user (right in raw webcam) -> negative headX
+            // Responsive scaling so even natural head movements & tilts make Mochi look directly at you
             const rawHeadX = Math.max(
               -1,
-              Math.min(1, -((faceCenterX - W / 2) / (W * 0.21)))
+              Math.min(1, -((faceCenterX - W / 2) / (W * 0.165)))
             );
             const rawHeadY = Math.max(
               -1,
-              Math.min(1, (faceCenterY - H * 0.42) / (H * 0.19))
+              Math.min(1, (faceCenterY - H * 0.44) / (H * 0.155))
             );
 
-            // Responsive EMA for natural gaze and lean
+            // Snappy EMA for immediate, responsive gaze and body lean
             smoothedHeadXRef.current =
-              smoothedHeadXRef.current * 0.55 + rawHeadX * 0.45;
+              smoothedHeadXRef.current * 0.42 + rawHeadX * 0.58;
             smoothedHeadYRef.current =
-              smoothedHeadYRef.current * 0.55 + rawHeadY * 0.45;
+              smoothedHeadYRef.current * 0.42 + rawHeadY * 0.58;
+
+            // Sample optical green channel dynamically centered on the user's face ROI
+            let greenSum = 0;
+            let lumaSum = 0;
+            let roiPixels = 0;
+            const roiX0 = Math.max(8, Math.round(faceCenterX - 20));
+            const roiX1 = Math.min(W - 8, Math.round(faceCenterX + 20));
+            const roiY0 = Math.max(6, Math.round(faceCenterY - 18));
+            const roiY1 = Math.min(H - 12, Math.round(faceCenterY + 12));
+
+            for (let ry = roiY0; ry < roiY1; ry++) {
+              for (let rx = roiX0; rx < roiX1; rx++) {
+                const idx = (ry * W + rx) * 4;
+                greenSum += frame[idx + 1];
+                lumaSum += currentLuma[ry * W + rx];
+                roiPixels++;
+              }
+            }
+            const avgFaceLuma = roiPixels > 0 ? lumaSum / roiPixels : 128;
+            const avgGreen = roiPixels > 0 ? greenSum / roiPixels : 128;
 
             // Store rPPG green channel sample
             greenSignalBuffer.current.push({ t: now, v: avgGreen });
@@ -623,45 +813,45 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             const bBuf = breathSignalBuffer.current;
             let rawBreath = 0;
-            if (bBuf.length > 8) {
+            if (bBuf.length > 6) {
               const mean = bBuf.reduce((acc, s) => acc + s.v, 0) / bBuf.length;
-              let maxDev = 0.26;
+              let maxDev = 0.16;
               for (const s of bBuf) {
                 const d = Math.abs(s.v - mean);
                 if (d > maxDev) maxDev = d;
               }
               const recent =
-                bBuf.slice(-4).reduce((a, s) => a + s.v, 0) /
-                Math.min(4, bBuf.length);
+                bBuf.slice(-3).reduce((a, s) => a + s.v, 0) /
+                Math.min(3, bBuf.length);
               const diff = recent - mean;
               const effectiveDiff =
-                Math.abs(diff) < 0.04
+                Math.abs(diff) < 0.018
                   ? 0
-                  : diff - Math.sign(diff) * 0.04;
+                  : diff - Math.sign(diff) * 0.018;
               rawBreath = Math.max(
                 -1,
-                Math.min(1, effectiveDiff / (maxDev * 0.55))
+                Math.min(1, effectiveDiff / (maxDev * 0.42))
               );
             }
 
             smoothedBreathRef.current =
-              smoothedBreathRef.current * 0.78 + rawBreath * 0.22;
+              smoothedBreathRef.current * 0.68 + rawBreath * 0.32;
             const currentBreath = Math.max(
               -1,
-              Math.min(1, smoothedBreathRef.current * 1.25)
+              Math.min(1, smoothedBreathRef.current * 1.35)
             );
 
             const breathDelta = currentBreath - prevBreathPhaseRef.current;
             prevBreathPhaseRef.current = currentBreath;
 
             let breathState: BreathState = "steady";
-            if (currentBreath > 0.14 || breathDelta > 0.012) {
+            if (currentBreath > 0.1 || breathDelta > 0.008) {
               breathState = "inhaling";
-            } else if (currentBreath < -0.14 || breathDelta < -0.012) {
+            } else if (currentBreath < -0.1 || breathDelta < -0.008) {
               breathState = "exhaling";
             }
 
-            if (Math.abs(currentBreath) > 0.15) {
+            if (Math.abs(currentBreath) > 0.11) {
               const currentSign = currentBreath >= 0 ? 1 : -1;
               if (prevSign < 0 && currentSign > 0) {
                 breathCrossingsRef.current.push(now);
@@ -689,30 +879,46 @@ export function useSmartSpectraCamera(enabled: boolean) {
             }
 
             // --- 3. Facial Expression Detection (Calm vs Smile vs Surprised) ---
+            const faceBoxW =
+              nativeFaceBox && video.videoWidth > 0
+                ? (nativeFaceBox.width / video.videoWidth) * W
+                : 34;
+            const faceBoxH =
+              nativeFaceBox && video.videoHeight > 0
+                ? (nativeFaceBox.height / video.videoHeight) * H
+                : 40;
+
             const mCenterX = Math.round(
-              Math.max(36, Math.min(W - 36, faceCenterX))
+              Math.max(24, Math.min(W - 24, faceCenterX))
             );
             const mCenterY = Math.round(
-              Math.max(30, Math.min(H - 22, faceCenterY + 12))
+              Math.max(24, Math.min(H - 16, faceCenterY + faceBoxH * 0.28))
             );
+            const mHalfW = Math.max(12, Math.min(22, Math.round(faceBoxW * 0.42)));
+            const mHalfH = Math.max(7, Math.min(12, Math.round(faceBoxH * 0.22)));
 
             let darkPixels = 0;
             let brightTeethPixels = 0;
+            let lipCornerContrast = 0;
             let minDarkX = W;
             let maxDarkX = 0;
             let minDarkY = H;
             let maxDarkY = 0;
             let mouthBoxTotal = 0;
 
-            for (let y = mCenterY - 9; y <= mCenterY + 9; y++) {
-              for (let x = mCenterX - 18; x <= mCenterX + 18; x++) {
+            for (let y = mCenterY - mHalfH; y <= mCenterY + mHalfH; y++) {
+              if (y < 2 || y >= H - 2) continue;
+              for (let x = mCenterX - mHalfW; x <= mCenterX + mHalfW; x++) {
+                if (x < 2 || x >= W - 2) continue;
                 const idx = (y * W + x) * 4;
+                const r = frame[idx];
                 const g = frame[idx + 1];
                 const b = frame[idx + 2];
                 const luma = currentLuma[y * W + x];
                 mouthBoxTotal++;
 
-                if (luma < avgFaceLuma * 0.68) {
+                // Inner mouth cavity or shadow line between lips
+                if (luma < avgFaceLuma * 0.77) {
                   darkPixels++;
                   if (x < minDarkX) minDarkX = x;
                   if (x > maxDarkX) maxDarkX = x;
@@ -720,12 +926,22 @@ export function useSmartSpectraCamera(enabled: boolean) {
                   if (y > maxDarkY) maxDarkY = y;
                 }
 
+                // Teeth or bright lip highlight during a smile
                 if (
-                  luma > avgFaceLuma * 1.08 &&
-                  b > g * 0.82 &&
-                  Math.abs(x - mCenterX) < 14
+                  (luma > avgFaceLuma * 1.02 &&
+                    b >= g * 0.74 &&
+                    r >= g * 0.85 &&
+                    Math.abs(x - mCenterX) < mHalfW * 0.82) ||
+                  luma > avgFaceLuma * 1.14
                 ) {
                   brightTeethPixels++;
+                }
+
+                // Horizontal smile stretch & cheek/nasolabial crease at outer mouth corners
+                if (Math.abs(x - mCenterX) >= mHalfW * 0.45) {
+                  const vGrad = Math.abs(luma - currentLuma[(y - 1) * W + x]);
+                  const hGrad = Math.abs(luma - currentLuma[y * W + (x - 1)]);
+                  lipCornerContrast += vGrad * 0.65 + hGrad * 0.35;
                 }
               }
             }
@@ -734,12 +950,15 @@ export function useSmartSpectraCamera(enabled: boolean) {
               mouthBoxTotal > 0 ? darkPixels / mouthBoxTotal : 0;
             const brightRatio =
               mouthBoxTotal > 0 ? brightTeethPixels / mouthBoxTotal : 0;
-            const mouthWidth = Math.max(1, maxDarkX - minDarkX);
-            const mouthHeight = Math.max(1, maxDarkY - minDarkY);
+            const avgCornerContrast =
+              mouthBoxTotal > 0 ? lipCornerContrast / (mouthBoxTotal * 0.45) : 0;
+            const mouthWidth = maxDarkX >= minDarkX ? Math.max(1, maxDarkX - minDarkX) : 1;
+            const mouthHeight = maxDarkY >= minDarkY ? Math.max(1, maxDarkY - minDarkY) : 1;
             const mouthAspect = mouthWidth / mouthHeight;
 
+            // Quick 15-frame adaptive baseline (~0.25s) so expressions respond immediately
             const base = baselineRef.current;
-            if (base.samples < 35) {
+            if (base.samples < 15) {
               base.mouthDarkRatio =
                 (base.mouthDarkRatio * base.samples + darkRatio) /
                 (base.samples + 1);
@@ -749,29 +968,37 @@ export function useSmartSpectraCamera(enabled: boolean) {
               base.mouthAspect =
                 (base.mouthAspect * base.samples + mouthAspect) /
                 (base.samples + 1);
+              base.lipContrast =
+                (base.lipContrast * base.samples + avgCornerContrast) /
+                (base.samples + 1);
               base.samples += 1;
             }
 
-            // Raw frame detection with tightened thresholds (ignores subtle lip/breathing twitches)
+            // Responsive expression detection (supports teeth smiles, closed-lip grins, and open-mouth surprise)
             let rawCandidate: BiometricExpression = "calm";
 
-            if (
-              darkRatio > base.mouthDarkRatio + 0.085 &&
-              mouthHeight >= 8 &&
-              mouthAspect < 1.85
-            ) {
+            const isSurprisedMouth =
+              darkRatio > base.mouthDarkRatio + 0.045 &&
+              mouthHeight >= Math.max(5, mHalfH * 0.75) &&
+              mouthAspect < 1.95;
+
+            const isTeethSmile =
+              brightRatio > base.mouthBrightRatio + 0.022 ||
+              (brightRatio > 0.075 && mouthWidth >= mHalfW * 0.85);
+
+            const isWideLipSmile =
+              (mouthWidth >= mHalfW * 0.92 &&
+                mouthAspect >= 1.95 &&
+                darkRatio > base.mouthDarkRatio + 0.008) ||
+              avgCornerContrast > base.lipContrast * 1.18 + 0.75;
+
+            if (isSurprisedMouth) {
               rawCandidate = "surprised";
-            } else if (
-              brightRatio > base.mouthBrightRatio + 0.042 ||
-              (mouthWidth >= 16 &&
-                mouthAspect >= 2.25 &&
-                darkRatio > base.mouthDarkRatio + 0.02)
-            ) {
+            } else if (isTeethSmile || isWideLipSmile) {
               rawCandidate = "grin";
             }
 
-            // Hysteresis & consecutive confirmation:
-            // Require expression to persist steadily across at least 6 consecutive frames (~200ms)
+            // Fast confirmation: only 2 consecutive frames (~33ms) needed so natural smiles register effortlessly
             const cons = expressionConsecutiveRef.current;
             if (rawCandidate === cons.candidate) {
               cons.count += 1;
@@ -782,27 +1009,27 @@ export function useSmartSpectraCamera(enabled: boolean) {
 
             let detectedExpr: BiometricExpression = expressionHoldRef.current.expr;
 
-            // Only switch if deliberately confirmed across multiple frames
-            if (cons.count >= 6 && cons.candidate !== "calm") {
+            if (cons.count >= 2 && cons.candidate !== "calm") {
               detectedExpr = cons.candidate;
               expressionHoldRef.current = {
                 expr: cons.candidate,
-                until: now + 2800, // hold stable expression for 2.8s
+                until: now + 2200, // hold expression warmly for 2.2s
               };
             } else if (now >= expressionHoldRef.current.until) {
-              // Smoothly return to calm baseline
               detectedExpr = "calm";
               expressionHoldRef.current = {
                 expr: "calm",
-                until: now + 1200,
+                until: now + 400,
               };
             }
 
-            if (detectedExpr === "calm" && base.samples >= 35) {
+            if (detectedExpr === "calm" && base.samples >= 15) {
               base.mouthDarkRatio =
-                base.mouthDarkRatio * 0.992 + darkRatio * 0.008;
+                base.mouthDarkRatio * 0.985 + darkRatio * 0.015;
               base.mouthBrightRatio =
-                base.mouthBrightRatio * 0.992 + brightRatio * 0.008;
+                base.mouthBrightRatio * 0.985 + brightRatio * 0.015;
+              base.lipContrast =
+                base.lipContrast * 0.985 + avgCornerContrast * 0.015;
             }
 
             // --- 4. Heartbeat (rPPG pulse peak + edge ripple trigger, ONLY when face is present) ---
@@ -842,9 +1069,33 @@ export function useSmartSpectraCamera(enabled: boolean) {
               );
             }
 
-            const pulseBpm = lastDisplayedBpmRef.current;
+            const livePresage = presageLiveRef.current;
+            const hasFreshPresage =
+              livePresage.nativeActive &&
+              livePresage.lastMetricsAt > 0 &&
+              now - livePresage.lastMetricsAt < 10000;
 
-            const beatIntervalMs = (60 / pulseBpm) * 1000;
+            const pulseBpm =
+              hasFreshPresage && livePresage.pulseBpm !== null
+                ? livePresage.pulseBpm
+                : lastDisplayedBpmRef.current;
+
+            const finalBreathingRateBpm =
+              hasFreshPresage && livePresage.breathingRateBpm !== null
+                ? livePresage.breathingRateBpm
+                : breathingRateBpm;
+
+            const finalBreathPhase =
+              hasFreshPresage && livePresage.breathingPhase !== null
+                ? livePresage.breathingPhase
+                : currentBreath;
+
+            const finalExpression =
+              hasFreshPresage && livePresage.expression !== null
+                ? livePresage.expression
+                : detectedExpr;
+
+            const beatIntervalMs = (60 / Math.max(45, pulseBpm)) * 1000;
             let triggeredBeat = false;
             if (now - lastBeatTimeRef.current >= beatIntervalMs) {
               lastBeatTimeRef.current = now;
@@ -856,31 +1107,39 @@ export function useSmartSpectraCamera(enabled: boolean) {
               lastTraceSampleRef.current = now;
               breathTraceRef.current = [
                 ...breathTraceRef.current.slice(1),
-                currentBreath,
+                finalBreathPhase,
               ];
               const pulseSample = triggeredBeat
                 ? 0.95
                 : normalizedPulseWave * 0.55;
-              pulseTraceRef.current = [
-                ...pulseTraceRef.current.slice(1),
-                pulseSample,
-              ];
+              pulseTraceRef.current =
+                hasFreshPresage && livePresage.pulseTrace.length >= 12
+                  ? [
+                      ...Array(Math.max(0, 36 - livePresage.pulseTrace.length)).fill(0),
+                      ...livePresage.pulseTrace,
+                    ].slice(-36)
+                  : [...pulseTraceRef.current.slice(1), pulseSample];
             }
 
             setSnapshot((prev) => ({
               ...prev,
-              facePresent: true,
-              breathPhase: currentBreath,
+              facePresent:
+                livePresage.nativeActive && livePresage.facePresent !== null
+                  ? livePresage.facePresent
+                  : true,
+              breathPhase: finalBreathPhase,
               breathState,
               breathTrace: breathTraceRef.current,
               pulseTrace: pulseTraceRef.current,
-              breathingRateBpm,
+              breathingRateBpm: finalBreathingRateBpm,
               pulseBpm,
+              hrvRmssd: livePresage.hrvRmssd,
+              validationHint: livePresage.validationHint,
               heartbeatCount: beatCounterRef.current,
               heartbeatAngle: triggeredBeat
                 ? (Math.random() - 0.5) * Math.PI * 1.2 - Math.PI / 2
                 : prev.heartbeatAngle,
-              expression: detectedExpr,
+              expression: finalExpression,
               headX: Math.max(-1, Math.min(1, smoothedHeadXRef.current)),
               headY: Math.max(-1, Math.min(1, smoothedHeadYRef.current)),
             }));

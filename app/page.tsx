@@ -134,13 +134,16 @@ export default function MochiPage() {
   const baselineBpmRef = useRef(baselineBpm);
   baselineBpmRef.current = baselineBpm;
 
-  // Flash heart indicator on each beat
+  // Flash heart indicator on each beat (only when a real face is present)
   useEffect(() => {
-    if (!cameraEnabled || snapshot.heartbeatCount === 0) return;
+    if (!cameraEnabled || !snapshot.facePresent || snapshot.heartbeatCount === 0) {
+      setBeatFlash(false);
+      return;
+    }
     setBeatFlash(true);
     const timer = setTimeout(() => setBeatFlash(false), 220);
     return () => clearTimeout(timer);
-  }, [cameraEnabled, snapshot.heartbeatCount]);
+  }, [cameraEnabled, snapshot.facePresent, snapshot.heartbeatCount]);
 
   // Sync webcam MediaStream into optional mirror preview & awakening mini-lens
   useEffect(() => {
@@ -228,6 +231,11 @@ export default function MochiPage() {
       return;
     }
 
+    if (!snapshot.facePresent) {
+      setSelectedMood("sleepy");
+      return;
+    }
+
     if (snapshot.expression === "surprised") {
       setSelectedMood("surprised");
     } else if (snapshot.expression === "grin") {
@@ -235,7 +243,14 @@ export default function MochiPage() {
     } else {
       setSelectedMood("calm");
     }
-  }, [storyStage, cameraEnabled, breatheWithMe, viewMode, snapshot.expression]);
+  }, [
+    storyStage,
+    cameraEnabled,
+    breatheWithMe,
+    viewMode,
+    snapshot.facePresent,
+    snapshot.expression,
+  ]);
 
   // Gentle idle mindful quote cycling when resting in face mode before "Breathe with me"
   useEffect(() => {
@@ -628,23 +643,31 @@ export default function MochiPage() {
                   className="w-full h-full object-cover -scale-x-100"
                 />
                 <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between px-2.5 py-1 bg-background/90 border border-border text-[11px] font-mono text-foreground">
-                  <span className="flex items-center gap-1">
-                    <span
-                      className={
-                        beatFlash ? "text-rose-600" : "text-foreground"
-                      }
-                    >
-                      ♥
+                  {snapshot.facePresent ? (
+                    <>
+                      <span className="flex items-center gap-1">
+                        <span
+                          className={
+                            beatFlash ? "text-rose-600" : "text-foreground"
+                          }
+                        >
+                          ♥
+                        </span>
+                        {snapshot.pulseBpm} bpm
+                      </span>
+                      <span>
+                        {snapshot.breathState === "inhaling"
+                          ? "↑ inhaling"
+                          : snapshot.breathState === "exhaling"
+                            ? "↓ exhaling"
+                            : "• steady"}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-rose-600/90 w-full text-center">
+                      no face in frame
                     </span>
-                    {snapshot.pulseBpm} bpm
-                  </span>
-                  <span>
-                    {snapshot.breathState === "inhaling"
-                      ? "↑ inhaling"
-                      : snapshot.breathState === "exhaling"
-                        ? "↓ exhaling"
-                        : "• steady"}
-                  </span>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -737,17 +760,19 @@ export default function MochiPage() {
                             0.22 +
                             Math.sin(idx * 1.7) * 0.15
                           )
-                          : 0.12;
-                        const totalHeightPx = Math.round(
-                          (6 + activeAmp * 32) * (0.35 + edgeTaper * 0.65)
-                        );
+                          : 0;
+                        const totalHeightPx = snapshot.facePresent
+                          ? Math.round(
+                              (6 + activeAmp * 32) * (0.35 + edgeTaper * 0.65)
+                            )
+                          : 4;
                         const isSegmented =
                           snapshot.facePresent &&
                           idx % 5 === 2 &&
                           totalHeightPx > 18;
                         const barOpacity = snapshot.facePresent
                           ? (0.28 + edgeTaper * 0.72).toFixed(2)
-                          : "0.22";
+                          : "0.18";
 
                         return isSegmented ? (
                           <div
@@ -790,10 +815,11 @@ export default function MochiPage() {
                   </div>
 
                   {/* Feature #1: Subtle 1-Line State Check-In */}
-                  <div className="mt-1.5 text-center">
+                  <div className="mt-1.5 text-center flex flex-col items-center gap-1">
                     {!snapshot.facePresent ? (
                       <p className="text-[11px] text-rose-600/90 font-medium">
-                        Step in front of the camera so Mochi can feel your pulse
+                        {snapshot.validationHint ||
+                          "Step in front of the camera so Mochi can feel your pulse"}
                       </p>
                     ) : storyStage === "awakening" ? (
                       <p className="text-[11px] text-muted-foreground">
@@ -809,6 +835,26 @@ export default function MochiPage() {
                             : `Steady rhythm · ${snapshot.breathingRateBpm} br/min · tap to pause`}
                       </p>
                     )}
+
+                    {/* Transparent Presage SmartSpectra SDK Runtime Badge */}
+                    <div className="inline-flex items-center gap-1.5 text-[10px] font-mono tracking-wide text-muted-foreground/75">
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          snapshot.sdkBridgeConnected
+                            ? "bg-emerald-500 animate-pulse"
+                            : "bg-amber-400"
+                        }`}
+                      />
+                      <span>
+                        {snapshot.sdkBridgeConnected
+                          ? `Presage SmartSpectra SDK v${snapshot.sdkVersion} · Live${
+                              snapshot.hrvRmssd
+                                ? ` · HRV ${snapshot.hrvRmssd}ms`
+                                : ""
+                            }`
+                          : "Browser Preview Mode (run locally with API key for live SDK)"}
+                      </span>
+                    </div>
                   </div>
                 </motion.div>
               )}
