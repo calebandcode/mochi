@@ -177,9 +177,33 @@ export default function MochiPage() {
     }
   }, [storyStage, snapshot.facePresent, snapshot.pulseBpm, baselineBpm]);
 
-  // ─── Stage 2: Face-Gated Blood-Flow Border Awakening Ritual ────────────────
-  // Advances ONLY when a real face is detected in front of the camera (`snapshot.facePresent`)
-  // and real cardiac heartbeat peaks (`snapshot.heartbeatCount`) arrive!
+  // ─── Stage 2a: Gentle calibration progress while Presage locks onto first pulse ──
+  useEffect(() => {
+    if (
+      storyStage !== "awakening" ||
+      !snapshot.sdkBridgeConnected ||
+      !snapshot.facePresent ||
+      snapshot.pulseBpm > 0
+    ) {
+      return;
+    }
+
+    const calibTimer = setInterval(() => {
+      setAwakeningProgress((prev) =>
+        prev < 0.45 ? Math.min(0.45, prev + 0.04) : prev
+      );
+    }, 450);
+    return () => clearInterval(calibTimer);
+  }, [
+    storyStage,
+    snapshot.sdkBridgeConnected,
+    snapshot.facePresent,
+    snapshot.pulseBpm,
+  ]);
+
+  // ─── Stage 2b: Face-Gated Blood-Flow Border Awakening Ritual ───────────────
+  // Advances ONLY when Presage SmartSpectra SDK detects a real face (`snapshot.facePresent`)
+  // and locks onto real cardiac heartbeat peaks (`snapshot.heartbeatCount`)!
   useEffect(() => {
     if (storyStage !== "awakening") return;
 
@@ -190,7 +214,7 @@ export default function MochiPage() {
       lastProcessedBeatRef.current = snapshot.heartbeatCount;
 
       setAwakeningProgress((prev) => {
-        const next = Math.min(1, prev + 0.17);
+        const next = Math.min(1, Math.max(prev, 0.45) + 0.28);
         if (soundEnabled && next < 1) {
           sfx.playHeartbeat();
         }

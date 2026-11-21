@@ -210,6 +210,7 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
         }
       );
 
+      let loggedFirstMetric = false;
       sdk.on("metrics", (buf: Buffer, timestampUs: number) => {
         try {
           const decoded = decodeMetrics(buf);
@@ -218,6 +219,12 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
           const pulseRates = decoded.cardio?.pulseRate || [];
           const latestPulse =
             pulseRates.length > 0 ? pulseRates[pulseRates.length - 1] : null;
+          if (!loggedFirstMetric && latestPulse) {
+            loggedFirstMetric = true;
+            console.log(
+              `[SmartSpectra] Live pulse locked: ${Math.round(Number(latestPulse.value))} BPM (confidence: ${latestPulse.confidence}%)`
+            );
+          }
           const pulseTrace = (decoded.cardio?.arterialPressureTrace || [])
             .map((p) => Number(p.value ?? 0))
             .filter((n) => Number.isFinite(n));
