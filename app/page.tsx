@@ -643,11 +643,10 @@ export default function MochiPage() {
                   </svg>
                 </div>
                 <span
-                  className={`overflow-hidden whitespace-nowrap text-xs sm:text-sm font-medium tracking-tight transition-all duration-300 ease-out ${
-                    isDownloadingCard
+                  className={`overflow-hidden whitespace-nowrap text-xs sm:text-sm font-medium tracking-tight transition-all duration-300 ease-out ${isDownloadingCard
                       ? "max-w-[130px] opacity-100 ml-2"
                       : "max-w-0 opacity-0 group-hover:max-w-[130px] group-hover:opacity-100 group-hover:ml-2"
-                  }`}
+                    }`}
                 >
                   {isDownloadingCard ? "Saving card..." : "Download card"}
                 </span>
@@ -771,9 +770,9 @@ export default function MochiPage() {
                         {snapshot.facePresent && snapshot.pulseBpm > 0
                           ? breatheWithMe && baselineBpm
                             ? Math.max(
-                                58,
-                                Math.round(baselineBpm - calmProgress * 7)
-                              )
+                              58,
+                              Math.round(baselineBpm - calmProgress * 7)
+                            )
                             : settledBpm !== null
                               ? settledBpm
                               : snapshot.pulseBpm
@@ -802,8 +801,8 @@ export default function MochiPage() {
                           : 0;
                         const totalHeightPx = snapshot.facePresent
                           ? Math.round(
-                              (6 + activeAmp * 32) * (0.35 + edgeTaper * 0.65)
-                            )
+                            (6 + activeAmp * 32) * (0.35 + edgeTaper * 0.65)
+                          )
                           : 4;
                         const isSegmented =
                           snapshot.facePresent &&
@@ -867,7 +866,8 @@ export default function MochiPage() {
                       </p>
                     ) : snapshot.pulseBpm === 0 ? (
                       <p className="text-[11px] text-muted-foreground">
-                        Calibrating live pulse with Presage SmartSpectra SDK...
+                        {snapshot.validationHint ||
+                          "Calibrating live pulse with Presage SmartSpectra SDK..."}
                       </p>
                     ) : storyStage === "awakening" ? (
                       <p className="text-[11px] text-muted-foreground">
@@ -887,19 +887,17 @@ export default function MochiPage() {
                     {/* Transparent Presage SmartSpectra SDK Runtime Badge */}
                     <div className="inline-flex items-center gap-1.5 text-[10px] font-mono tracking-wide text-muted-foreground/75">
                       <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          snapshot.sdkBridgeConnected
+                        className={`w-1.5 h-1.5 rounded-full ${snapshot.sdkBridgeConnected
                             ? "bg-emerald-500 animate-pulse"
                             : "bg-rose-500"
-                        }`}
+                          }`}
                       />
                       <span>
                         {snapshot.sdkBridgeConnected
-                          ? `Presage SmartSpectra SDK v${snapshot.sdkVersion} · Live${
-                              snapshot.hrvRmssd
-                                ? ` · HRV ${snapshot.hrvRmssd}ms`
-                                : ""
-                            }`
+                          ? `Presage SmartSpectra SDK v${snapshot.sdkVersion} · Live${snapshot.hrvRmssd
+                            ? ` · HRV ${snapshot.hrvRmssd}ms`
+                            : ""
+                          }`
                           : "Presage SmartSpectra SDK disconnected (API key required)"}
                       </span>
                     </div>

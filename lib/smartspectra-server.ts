@@ -196,10 +196,15 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
         broadcast({ type: "processingStatus", status });
       });
 
+      let lastValCode = -1;
       sdk.on(
         "validationStatus",
         (code: number, timestampUs: number, hint: string) => {
           const noFaceCode = ValidationCode?.kNoFaceFound ?? 1;
+          if (code !== lastValCode) {
+            lastValCode = code;
+            console.log(`[SmartSpectra] validation code=${code} hint="${hint || "ok"}"`);
+          }
           broadcast({
             type: "validation",
             code,
@@ -329,6 +334,7 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
       sdk.on(
         "error",
         (code: number, message: string, retryable: boolean) => {
+          console.error(`[SmartSpectra] SDK error code=${code} retryable=${retryable}: ${message}`);
           state.lastError = message;
           state.running = false;
           broadcast({ type: "sdk_error", code, message, retryable });
