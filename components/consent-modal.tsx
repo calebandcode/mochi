@@ -22,7 +22,7 @@ export function ConsentModal({
       category: "STEP 1 OF 3",
       visualType: "camera",
       summary: "How Mochi senses you",
-      body: "Mochi uses your camera to measure subtle optical micro-changes in facial blood flow (contactless rPPG) and track gentle expressions. Monitoring is 100% consensual, active only while on this screen, and clearly indicated by your browser's camera indicator.",
+      body: "Mochi uses the Presage SmartSpectra SDK and your webcam to sense your pulse (contactless rPPG), breathing rhythm, and facial expressions. Monitoring is 100% consensual, active only while on this screen, and indicated by your camera's hardware light.",
       badge: "CONSENSUAL SENSING",
     },
     {
@@ -30,7 +30,7 @@ export function ConsentModal({
       category: "STEP 2 OF 3",
       visualType: "privacy",
       summary: "Zero storage. Processed in memory.",
-      body: "Your video stream is processed in real-time memory and immediately discarded after each frame. No video, photos, or facial biometric profiles are ever recorded, saved to disk, or transmitted to any external servers or third parties.",
+      body: "Video frames are processed locally in real-time memory and immediately discarded. No video, photos, or biometric profiles are recorded, saved to disk, or sent to any server. SDK telemetry is disabled; Presage servers are only contacted for API key authorization.",
       badge: "ZERO VIDEO STORAGE",
     },
     {
