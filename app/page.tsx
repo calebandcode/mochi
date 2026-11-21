@@ -177,21 +177,35 @@ export default function MochiPage() {
     }
   }, [storyStage, snapshot.facePresent, snapshot.pulseBpm, baselineBpm]);
 
-  // ─── Stage 2a: Gentle calibration progress while Presage locks onto first pulse ──
+  // ─── Stage 2a: Wake Mochi once Presage locks onto your live face & begins streaming ──
+  // Presage streams face landmarks, expressions, and traces immediately (~2-3s), while the
+  // windowed BPM readout settles over ~10-15s. Let Mochi finish waking once live Presage
+  // tracking is active so the user can interact while BPM finishes calibrating.
   useEffect(() => {
     if (
       storyStage !== "awakening" ||
       !snapshot.sdkBridgeConnected ||
-      !snapshot.facePresent ||
-      snapshot.pulseBpm > 0
+      !snapshot.facePresent
     ) {
       return;
     }
 
     const calibTimer = setInterval(() => {
-      setAwakeningProgress((prev) =>
-        prev < 0.45 ? Math.min(0.45, prev + 0.04) : prev
-      );
+      setAwakeningProgress((prev) => {
+        const step = snapshot.pulseBpm > 0 ? 0.25 : 0.12;
+        const next = Math.min(1, prev + step);
+        if (soundEnabled && next < 1 && Math.round(next * 10) % 2 === 0) {
+          sfx.playHeartbeat();
+        }
+        if (next >= 1) {
+          setTimeout(() => {
+            if (soundEnabled) sfx.playChime();
+            setStoryStage("alive");
+            setSelectedMood("grin");
+          }, 320);
+        }
+        return next;
+      });
     }, 450);
     return () => clearInterval(calibTimer);
   }, [
@@ -199,6 +213,7 @@ export default function MochiPage() {
     snapshot.sdkBridgeConnected,
     snapshot.facePresent,
     snapshot.pulseBpm,
+    soundEnabled,
   ]);
 
   // ─── Stage 2b: Face-Gated Blood-Flow Border Awakening Ritual ───────────────

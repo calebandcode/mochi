@@ -210,7 +210,7 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
         }
       );
 
-      let loggedFirstMetric = false;
+      let lastMetricLogMs = 0;
       sdk.on("metrics", (buf: Buffer, timestampUs: number) => {
         try {
           const decoded = decodeMetrics(buf);
@@ -219,12 +219,6 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
           const pulseRates = decoded.cardio?.pulseRate || [];
           const latestPulse =
             pulseRates.length > 0 ? pulseRates[pulseRates.length - 1] : null;
-          if (!loggedFirstMetric && latestPulse) {
-            loggedFirstMetric = true;
-            console.log(
-              `[SmartSpectra] Live pulse locked: ${Math.round(Number(latestPulse.value))} BPM (confidence: ${latestPulse.confidence}%)`
-            );
-          }
           const pulseTrace = (decoded.cardio?.arterialPressureTrace || [])
             .map((p) => Number(p.value ?? 0))
             .filter((n) => Number.isFinite(n));
@@ -286,6 +280,14 @@ export async function ensureSmartSpectraStarted(): Promise<SmartSpectraGlobalSta
               x: sumX / latestLandmarks.value.length,
               y: sumY / latestLandmarks.value.length,
             };
+          }
+
+          const nowMs = Date.now();
+          if (nowMs - lastMetricLogMs >= 2000) {
+            lastMetricLogMs = nowMs;
+            console.log(
+              `[SmartSpectra] pulse=${latestPulse ? Math.round(Number(latestPulse.value)) : "--"}bpm | breath=${latestBreathRate ? Math.round(Number(latestBreathRate.value)) : "--"}br/m | trace=${pulseTrace.length}/${breathingTrace.length} | expr=${expressionLabel ?? "--"} | lm=${latestLandmarks?.value?.length ?? 0}`
+            );
           }
 
           broadcast({
